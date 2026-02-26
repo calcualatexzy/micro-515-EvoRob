@@ -35,7 +35,7 @@ class ES(EA):
         self.max = opts["max"]
 
         self.current_gen = 0
-        self.current_mean = [(self.min + self.max) / 2]*self.n_params
+        self.current_mean = np.array([(self.min + self.max) / 2] * self.n_params)
         self.current_sigma = opts["mutation_sigma"]
         self.min_sigma = opts["min_sigma"]
         self.sigma_decay_rate = opts["sigma_decay_rate"]
@@ -89,41 +89,67 @@ class ES(EA):
     def initialise_x0(self):
         """Initialises the first population."""
         # TODO: generate the initial population mean vector (current_mean)
-        mean_vector = ...
+        mean_vector = np.tile(self.current_mean, (self.n_pop, 1))
         return mean_vector
 
     def update_sigma(self):
         """Update the perturbation strength (sigma)."""
         # TODO: implement a decay of the sigma value over generations, ensuring it does not go below min_sigma
-        self.current_sigma = ...
+        self.current_sigma = max(self.current_sigma * self.sigma_decay_rate, self.min_sigma)
 
     def sort_and_select_parents(self, population, fitness, num_parents):
         """Sorts the population based on fitness and selects the top individuals as parents."""
         # TODO: sort the population and fitness based on fitness values, and select the top num_parents individuals as parents
-        parent_population = ...
-        parent_fitness = ...
+        parent_population = population[np.argsort(fitness)[::-1]][:num_parents]
+        parent_fitness = fitness[np.argsort(fitness)[::-1]][:num_parents]
 
         return parent_population, parent_fitness
 
     def update_population_mean(self, parent_population, parent_fitness):
         # TODO: compute the new population mean as a weighted average of the parent population, where the weights are based on the parent fitness
         # (you can use rank or raw fitness values)
-        # Normalise parent fitness scores
-        normed_parents_fitness = ...
-
-        # Compute population weighted to the normed fitness scores
-        weighted_parents_population = ...
-
-        # Calculate the sum of weighted parents population
-        updated_mean_vector = ...
-
-        return updated_mean_vector
+        if rank:
+            # Use rank-based weights (higher rank = higher weight)
+            ranks = np.arange(len(parent_fitness), 0, -1)  # Best gets highest rank
+            weights = ranks / np.sum(ranks)
+        else:
+            # Use raw fitness values as weights
+            # Shift fitness to be non-negative for proper weighting
+            fitness_shifted = parent_fitness - np.min(parent_fitness) + 1e-6
+            weights = fitness_shifted / np.sum(fitness_shifted)
+        
+        self.current_mean = np.dot(weights, parent_population)
 
     def generate_mutated_offspring(self, population_size):
         """Generates a new population by adding Gaussian noise to the current mean."""
         # TODO: generate a new population by adding Gaussian noise to the current mean, where the noise is scaled by the current sigma value
-        perturbation = ...
-        mutated_population = ...
+        perturbation = np.random.randn(population_size, self.n_params) * self.current_sigma
+        mutated_population = self.current_mean + perturbation
 
         return mutated_population
 
+    # def sort_and_select_parents(self, population, fitness, num_parents):
+    #     # TODO
+    #     parent_population = ...
+    #     parent_fitness = ...
+    #     return parent_population, parent_fitness
+
+    # def update_population_mean(self, parent_population, parent_fitness):
+    #     # TODO
+    #     # Normalise parent fitness scores
+    #     normed_parents_fitness = ...
+
+    #     # Compute population weighted to the normed fitness scores
+    #     weighted_parents_population = ...
+
+    #     # Calculate the sum of weighted parents population
+    #     updated_mean_vector = ...
+
+    #     return updated_mean_vector
+
+    # def update_sigma(self):
+    #     #TODO
+    #     minimum_sigma = ...
+    #     sigma = self.current_sigma
+    #     param_size = self.n_params
+    #     return sigma

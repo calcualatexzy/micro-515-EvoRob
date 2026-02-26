@@ -136,25 +136,28 @@ def main():
     # TODO: play with the hyperparameters - these are far from optimal!
     opts = ES_opts.copy()
     opts["min"] = 0
-    opts["max"] = 0.5
-    opts["num_parents"] = 20
+    opts["max"] = 0.4
+    opts["num_parents"] = 25  
     opts["num_generations"] = 100
     opts["mutation_sigma"] = 0.6
-    opts["min_sigma"] = 0.3
-    opts["sigma_decay_rate"] = 0.1
+    opts["min_sigma"] = 0.05
+    opts["sigma_decay_rate"] = 0.98
 
-    population_size = 100
+    population_size = 150 
 
     ea = ES(population_size, n_parameters, opts, log_every=2, output_dir=results_dir)
 
     #%% Optimise
-    for _ in range(ea.n_gen):
+    for i_gen in range(ea.n_gen):
         pop = ea.ask()
         fitnesses_gen = np.empty(ea.n_pop)
         for index, genotype in enumerate(pop):
             fit_ind = world.evaluate_individual(genotype)
             fitnesses_gen[index] = fit_ind
-        ea.tell(pop, fitnesses_gen)
+        if i_gen == ea.n_gen - 1:
+            ea.tell(pop, fitnesses_gen, save_checkpoint=True)
+        else:
+            ea.tell(pop, fitnesses_gen, save_checkpoint=False)
 
     #%% visualise
     checkpoint = get_last_checkpoint_dir(results_dir)

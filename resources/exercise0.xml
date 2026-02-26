@@ -36,9 +36,29 @@
     </body>
 
     <!-- Free-falling objects -->
+    <body name="sphere" pos="0 0 5">
+      <freejoint/>
+      <geom name="sphere" type="sphere" size="0.25" mass="0.2" material="object"/>
+    </body>
     <!-- TODO -->
 
     <!-- Simple 2-link robot arm -->
+    <body name="arm_base" pos="1 0 0.5">
+      <geom name="base" type="cylinder" size="0.05 0.1" material="robot"/>
+      
+      <!-- First link -->
+      <body name="link1" pos="0.2 0 0">
+        <joint name="joint1" type="hinge" axis="0 0 1" range="-180 180"/>
+        <geom name="link1_geom" type="box" size="0.2 0.05 0.05" material="robot"/>
+        
+        <!-- Second link -->
+        <body name="link2" pos="0.4 0 0">
+          <joint name="joint2" type="hinge" axis="0 0 1" range="-180 180"/>
+          <geom name="link2_geom" type="box" size="0.2 0.05 0.05" material="robot"/>
+        </body>
+      </body>
+      
+    </body>
     <!-- TODO -->
 
   </worldbody>
