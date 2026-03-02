@@ -108,48 +108,21 @@ class ES(EA):
     def update_population_mean(self, parent_population, parent_fitness):
         # TODO: compute the new population mean as a weighted average of the parent population, where the weights are based on the parent fitness
         # (you can use rank or raw fitness values)
-        if rank:
-            # Use rank-based weights (higher rank = higher weight)
-            ranks = np.arange(len(parent_fitness), 0, -1)  # Best gets highest rank
-            weights = ranks / np.sum(ranks)
-        else:
-            # Use raw fitness values as weights
-            # Shift fitness to be non-negative for proper weighting
-            fitness_shifted = parent_fitness - np.min(parent_fitness) + 1e-6
-            weights = fitness_shifted / np.sum(fitness_shifted)
-        
-        self.current_mean = np.dot(weights, parent_population)
+        # Normalise parent fitness scores
+        normed_parents_fitness = ...
+
+        # Compute population weighted to the normed fitness scores
+        weighted_parents_population = ...
+
+        # Calculate the sum of weighted parents population
+        updated_mean_vector = ...
+
+        return updated_mean_vector
 
     def generate_mutated_offspring(self, population_size):
         """Generates a new population by adding Gaussian noise to the current mean."""
         # TODO: generate a new population by adding Gaussian noise to the current mean, where the noise is scaled by the current sigma value
-        perturbation = np.random.randn(population_size, self.n_params) * self.current_sigma
-        mutated_population = self.current_mean + perturbation
+        perturbation = ...
+        mutated_population = ...
 
         return mutated_population
-
-    # def sort_and_select_parents(self, population, fitness, num_parents):
-    #     # TODO
-    #     parent_population = ...
-    #     parent_fitness = ...
-    #     return parent_population, parent_fitness
-
-    # def update_population_mean(self, parent_population, parent_fitness):
-    #     # TODO
-    #     # Normalise parent fitness scores
-    #     normed_parents_fitness = ...
-
-    #     # Compute population weighted to the normed fitness scores
-    #     weighted_parents_population = ...
-
-    #     # Calculate the sum of weighted parents population
-    #     updated_mean_vector = ...
-
-    #     return updated_mean_vector
-
-    # def update_sigma(self):
-    #     #TODO
-    #     minimum_sigma = ...
-    #     sigma = self.current_sigma
-    #     param_size = self.n_params
-    #     return sigma
