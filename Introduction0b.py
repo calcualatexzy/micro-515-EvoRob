@@ -136,14 +136,13 @@ def main():
     # TODO: play with the hyperparameters - these are far from optimal!
     opts = ES_opts.copy()
     opts["min"] = 0
-    opts["max"] = 0.4
-    opts["num_parents"] = 25  
+    opts["max"] = 0.5
+    opts["num_parents"] = 5
     opts["num_generations"] = 100
-    opts["mutation_sigma"] = 0.6
-    opts["min_sigma"] = 0.05
-    opts["sigma_decay_rate"] = 0.98
-
-    population_size = 150 
+    opts["mutation_sigma"] = 0.4
+    opts["min_sigma"] = 0.03
+    opts["sigma_decay_rate"] = 0.95
+    population_size = 200 
 
     ea = ES(population_size, n_parameters, opts, log_every=2, output_dir=results_dir)
 

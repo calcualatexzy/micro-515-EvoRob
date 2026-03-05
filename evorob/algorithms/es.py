@@ -62,7 +62,7 @@ class ES(EA):
         parents_population, parents_fitness = self.sort_and_select_parents(
             solutions, function_values, self.n_parents
         )
-        self.update_population_mean(parents_population, parents_fitness)
+        self.update_population_mean(parents_population, parents_fitness, rank=True)
         self.update_sigma()
 
         #% Some bookkeeping
@@ -71,15 +71,26 @@ class ES(EA):
         self.x = parents_population
         self.f = parents_fitness
 
-        best_index = np.argmax(function_values)
-        if function_values[best_index] > self.f_best_so_far:
-            self.f_best_so_far = function_values[best_index]
-            self.x_best_so_far = solutions[best_index]
+        safe_fitness = np.where(np.isfinite(function_values), function_values, -np.inf)
+        finite_population_fitness = safe_fitness[np.isfinite(safe_fitness)]
+        if finite_population_fitness.size > 0:
+            best_index = np.argmax(safe_fitness)
+            if safe_fitness[best_index] > self.f_best_so_far:
+                self.f_best_so_far = safe_fitness[best_index]
+                self.x_best_so_far = solutions[best_index]
+            mean_f = float(np.mean(finite_population_fitness))
+            std_f = float(np.std(finite_population_fitness))
+            best_f = float(safe_fitness[best_index])
+        else:
+            best_index = 0
+            mean_f = float("nan")
+            std_f = float("nan")
+            best_f = float("nan")
 
         if self.current_gen % self.log_every == 0:
-            print(f"Best in generation {self.current_gen: 3d}: {function_values[best_index]:.2f}\n"
+            print(f"Best in generation {self.current_gen: 3d}: {best_f:.2f}\n"
                   f"Best fitness so far   : {self.f_best_so_far:.2f}\n"
-                  f"Mean pop fitness      : {np.mean(self.f):.2f} +- {np.std(self.f):.2f}\n"
+                  f"Mean pop fitness      : {mean_f:.2f} +- {std_f:.2f}\n"
                   f"Sigma: {self.current_sigma:.2f} \n"
             )
         if save_checkpoint:
@@ -89,8 +100,8 @@ class ES(EA):
     def initialise_x0(self):
         """Initialises the first population."""
         # TODO: generate the initial population mean vector (current_mean)
-        mean_vector = np.tile(self.current_mean, (self.n_pop, 1))
-        return mean_vector
+        perturbation = np.random.randn(self.n_pop, self.n_params) * self.current_sigma
+        return self.current_mean + perturbation
 
     def update_sigma(self):
         """Update the perturbation strength (sigma)."""
@@ -100,29 +111,53 @@ class ES(EA):
     def sort_and_select_parents(self, population, fitness, num_parents):
         """Sorts the population based on fitness and selects the top individuals as parents."""
         # TODO: sort the population and fitness based on fitness values, and select the top num_parents individuals as parents
-        parent_population = population[np.argsort(fitness)[::-1]][:num_parents]
-        parent_fitness = fitness[np.argsort(fitness)[::-1]][:num_parents]
+        num_parents = min(num_parents, len(population))
+        safe_fitness = np.where(np.isfinite(fitness), fitness, -np.inf)
+        sorted_idx = np.argsort(safe_fitness)[::-1]
+        parent_idx = sorted_idx[:num_parents]
+        parent_population = population[parent_idx]
+        parent_fitness = safe_fitness[parent_idx]
 
         return parent_population, parent_fitness
 
-    def update_population_mean(self, parent_population, parent_fitness):
+    def update_population_mean(self, parent_population, parent_fitness, rank: bool = True):
         # TODO: compute the new population mean as a weighted average of the parent population, where the weights are based on the parent fitness
         # (you can use rank or raw fitness values)
         # Normalise parent fitness scores
-        normed_parents_fitness = ...
+        finite_mask = np.isfinite(parent_fitness)
+        if not np.any(finite_mask):
+            # Keep previous mean when there is no valid fitness signal.
+            return self.current_mean
+
+        valid_population = parent_population[finite_mask]
+
+        if rank:
+            # Rank-based recombination is more stable than raw-fitness weighting
+            # on noisy objectives.
+            rank_positions = np.arange(1, valid_population.shape[0] + 1, dtype=float)  # 1 = best
+            descending_weights = (valid_population.shape[0] + 1) - rank_positions
+            normed_parents_fitness = descending_weights / np.sum(descending_weights)
+        else:
+            valid_fitness = parent_fitness[finite_mask]
+            fitness_shifted = valid_fitness - np.min(valid_fitness)
+            if np.sum(fitness_shifted) == 0:
+                normed_parents_fitness = np.ones_like(valid_fitness) / len(valid_fitness)
+            else:
+                normed_parents_fitness = fitness_shifted / np.sum(fitness_shifted)
 
         # Compute population weighted to the normed fitness scores
-        weighted_parents_population = ...
+        weighted_parents_population = valid_population * normed_parents_fitness[:, np.newaxis]
 
         # Calculate the sum of weighted parents population
-        updated_mean_vector = ...
+        updated_mean_vector = np.sum(weighted_parents_population, axis=0)
+        self.current_mean = updated_mean_vector
 
         return updated_mean_vector
 
     def generate_mutated_offspring(self, population_size):
         """Generates a new population by adding Gaussian noise to the current mean."""
         # TODO: generate a new population by adding Gaussian noise to the current mean, where the noise is scaled by the current sigma value
-        perturbation = ...
-        mutated_population = ...
+        perturbation = np.random.randn(population_size, self.n_params) * self.current_sigma
+        mutated_population = self.current_mean + perturbation
 
         return mutated_population
