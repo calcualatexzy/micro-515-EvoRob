@@ -436,9 +436,9 @@ if __name__ == "__main__":
 
     # Uncomment to run full evolution:
     run_evolution_neural_controller(
-        num_generations=500,
+        num_generations=1500,
         population_size=250,
-        ckpt_interval=50,
+        ckpt_interval=100,
         checkpoint_path=None,
         run_evaluation=True,
         compute_score=True,
@@ -451,5 +451,5 @@ if __name__ == "__main__":
     # Replace the path with your actual checkpoint folder.
     # ----------------------------------------------------------------
     # evaluate_checkpoint(
-    #     checkpoint_dir="results/20260304_174619_neural_controller_ckpts",
+    #     checkpoint_dir="results/PassiveWalker-v0/20260312_160552_neural_controller_ckpts",
     # )
