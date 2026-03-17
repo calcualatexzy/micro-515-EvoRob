@@ -172,7 +172,7 @@ def run_evolution_oscillatory_controller(
     # Create evolutionary algorithm with checkpointing
     num_params = world.n_params
     ea = EvoAlgAPI(
-        num_params, population_size=population_size, sigma=0.5, output_dir=ckpt_dir
+        num_params, population_size=population_size, sigma=0.2, output_dir=ckpt_dir
     )
 
     # Evolution loop (checkpointing happens automatically in ea.tell())
@@ -287,7 +287,9 @@ def evaluate_checkpoint(
 
     # --- Run evaluation episodes on the real Ant-v5 ---
     env = gym.make(
-        "Ant-v5", use_contact_forces=False, max_episode_steps=max_episode_steps
+        "Ant-v5",
+        include_cfrc_ext_in_observation=False,
+        max_episode_steps=max_episode_steps,
     )
     rng = np.random.default_rng(seed)
     episode_rewards = []
@@ -320,7 +322,7 @@ def evaluate_checkpoint(
     print("\nRecording video...")
     video_env = gym.make(
         "Ant-v5",
-        use_contact_forces=False,
+        include_cfrc_ext_in_observation=False,
         max_episode_steps=max_episode_steps,
         render_mode="rgb_array",
     )
@@ -378,20 +380,20 @@ if __name__ == "__main__":
     test_exercise_implementation()
 
     # Uncomment to run full evolution:
-    run_evolution_oscillatory_controller(
-        num_generations=1500,
-        population_size=250,
-        ckpt_interval=100,
-        checkpoint_path=None,
-        run_evaluation=True,
-        random_seed=42,
-    )
+    # run_evolution_oscillatory_controller(
+    #     num_generations=1500,
+    #     population_size=250,
+    #     ckpt_interval=100,
+    #     checkpoint_path=None,
+    #     run_evaluation=True,
+    #     random_seed=42,
+    # )
 
     # ----------------------------------------------------------------
     # EVALUATION: Uncomment the lines below to evaluate your checkpoint
     # on the standard Gymnasium Ant-v5 and get your final score + video.
     # Replace the path with your actual checkpoint folder.
     # ----------------------------------------------------------------
-    # evaluate_checkpoint(
-    #     checkpoint_dir="results/REPLACE_WITH_YOUR_CHECKPOINT_FOLDER",
-    # )
+    evaluate_checkpoint(
+        checkpoint_dir="results/PassiveWalker-v0/20260315_132309_oscillatory_controller_ckpts",
+    )

@@ -206,18 +206,18 @@ def replay_checkpoint(checkpoint_path: str) -> None:
 
 
 if __name__ == "__main__":
-    run_reinforcement_learning(
-        total_timesteps=10_000, # recommended: 10_000_000 for good performance
-        num_envs=16,
-        batch_size=1024,
-        run_evaluation=True,
-        checkpoint_path="./results/ppo_ckpts"
-    )
-
-    # replay_checkpoint("./results/ppo_ckpts_10000_steps.zip")
-
-    # single_replay_checkpoint(
-    #     checkpoint_path="./results/ppo_ckpts_10000_steps.zip",
-    #     video_folder=".",
-    #     max_episode_steps=1000,
+    # run_reinforcement_learning(
+    #     total_timesteps=10_000, # recommended: 10_000_000 for good performance
+    #     num_envs=16,
+    #     batch_size=1024,
+    #     run_evaluation=True,
+    #     checkpoint_path="./results/ppo_ckpts"
     # )
+
+    replay_checkpoint("results/PassiveWalker-v0/ppo_ckpts")
+
+    single_replay_checkpoint(
+        checkpoint_path="results/PassiveWalker-v0/ppo_ckpts",
+        video_folder=".",
+        max_episode_steps=1000,
+    )
