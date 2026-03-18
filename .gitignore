@@ -1,6 +1,8 @@
 results/*
 /*.xml
 *.mp4
+evaluation_output/*
+.DS_Store/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -395,5 +395,5 @@ if __name__ == "__main__":
     # Replace the path with your actual checkpoint folder.
     # ----------------------------------------------------------------
     evaluate_checkpoint(
-        checkpoint_dir="results/PassiveWalker-v0/20260315_132309_oscillatory_controller_ckpts",
+        checkpoint_dir="results/PassiveWalker-v0/20260317_141153_oscillatory_controller_ckpts",
     )

@@ -23,8 +23,11 @@ class OscillatoryController(Controller):
         )
         self.output_size = output_size
         self.time_step = 0.0
-        # Match Ant control frequency (dt ~= 0.05s) for meaningful oscillator frequencies.
         self.dt = 0.05
+        # Speed bias: push actions closer to full range without hard clipping.
+        self.drive_gain = 1.6
+        # Deterministic phase template breaks symmetry at CMA-ES mean x0=0.
+        self.phase_template = np.linspace(-np.pi, np.pi, self.output_size, endpoint=False)
         self.n_params = self.get_num_params()
 
         # TODO: Initialize parameters for oscillatory control
@@ -55,11 +58,12 @@ class OscillatoryController(Controller):
         # Check if state is 2D, if so replicate actions for each environment
         # Hint: Use np.tile(actions, (batch_size, 1))
         state = np.asarray(state)
-        actions = self.amplitudes * np.sin(
-            2 * np.pi * self.frequencies * self.time_step + self.phases
-        )
+        theta = 2 * np.pi * self.frequencies * self.time_step + self.phases
+        # Add a small second harmonic to enrich gaits without adding parameters.
+        oscillation = (np.sin(theta) + 0.25 * np.sin(2.0 * theta)) / 1.25
+        raw_actions = self.drive_gain * self.amplitudes * oscillation
         self.time_step += self.dt
-        actions = np.clip(actions, -1.0, 1.0)
+        actions = np.tanh(raw_actions)
         if state.ndim == 2:
             actions = np.tile(actions, (state.shape[0], 1))
         return actions
@@ -82,13 +86,14 @@ class OscillatoryController(Controller):
         raw_freq = weights[self.output_size : 2 * self.output_size]
         raw_phase = weights[2 * self.output_size :]
 
-        # CMA-ES samples in an unconstrained space; map to stable physical ranges.
-        # - amplitude in [0, 1]
-        # - frequency in [0.3, 2.5] Hz
-        # - phase wrapped to [-pi, pi]
-        self.amplitudes = 0.5 * (np.tanh(raw_amp) + 1.0)
-        self.frequencies = 0.3 + 2.2 * (1.0 / (1.0 + np.exp(-raw_freq)))
-        self.phases = np.angle(np.exp(1j * raw_phase))
+        # Speed-oriented mapping:
+        # - amplitude in [0.15, 1.00] to avoid very weak gaits
+        # - frequency in [0.8, 5.5] Hz with center around 2.2 Hz
+        # - phase as template + bounded delta (keeps coordinated legs)
+        self.amplitudes = 0.15 + 0.85 * (0.5 * (np.tanh(raw_amp) + 1.0))
+        self.frequencies = np.clip(2.2 * np.exp(0.30 * raw_freq), 0.8, 5.5)
+        phase_delta = 0.75 * np.pi * np.tanh(raw_phase)
+        self.phases = np.angle(np.exp(1j * (self.phase_template + phase_delta)))
         self.reset_controller()
 
     def geno2pheno(self, genotype):
