@@ -99,26 +99,34 @@ class AntFlatEnvironment(MujocoEnv):
         return observation, reward, terminated, False, info
 
     def _get_obs(self):
-        # TODO: Return observation as concatenation of:
-        # - position EXCLUDING x,y: self.data.qpos[2:].flatten() (13 values)
-        # - velocity: self.data.qvel.flatten() (14 values)
-        # This gives 27 total dimensions, making the task translation-invariant
-        # Hint: Use np.concatenate() to combine both arrays
-        raise NotImplementedError("TODO: Implement observation function")
+        # Exclude x,y position to make task translation-invariant (like standard Ant-v4)
+        position = self.data.qpos[2:].flatten()  # z, quaternion, joint angles
+        velocity = self.data.qvel.flatten()  # all velocities
+
+        return np.concatenate((position, velocity))
 
     def _get_rew(self, x_velocity: float, action):
-        # TODO: Implement reward function with three components:
-        # 1. forward_reward = x_velocity * forward_reward_weight (weight=1.0)
-        # 2. healthy_reward = healthy_reward_weight (weight=1.0)
-        # 3. ctrl_cost = ctrl_cost_weight * sum of squared actions (weight=0.5)
-        # Final reward = forward_reward + healthy_reward - ctrl_cost
-        # Return: (reward, reward_info_dict)
-        raise NotImplementedError("TODO: Implement reward function")
+        forward_reward_weight = 1.0
+        healthy_reward_weight = 1.0
+        ctrl_cost_weight = 0.5
+
+        forward_reward = x_velocity * forward_reward_weight
+        healthy_reward = healthy_reward_weight
+        ctrl_cost = ctrl_cost_weight * np.sum(np.square(action))
+
+        reward = forward_reward + healthy_reward - ctrl_cost
+
+        reward_info = {
+            "reward_forward": forward_reward,
+            "reward_ctrl": -ctrl_cost,
+            "reward_survive": healthy_reward,
+        }
+
+        return reward, reward_info
 
     def _get_termination(self):
-        # TODO: Robot should terminate when:
-        # - Any value in state is not finite (check with np.isfinite(state).all())
-        # - Torso height (state[2]) is below 0.26 or above 1.0
-        # Return True if NOT healthy (i.e., should terminate)
-        # Hint: Use self.state_vector() to get current state
-        raise NotImplementedError("TODO: Implement termination function")
+        state = self.state_vector()
+        min_z_torso, max_z_torso = (0.26, 1.0)
+        is_healthy = np.isfinite(state).all() and min_z_torso <= state[2] <= max_z_torso
+
+        return not is_healthy
