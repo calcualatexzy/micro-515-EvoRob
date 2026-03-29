@@ -290,9 +290,8 @@ class NSGAII(EA):
         """
         # TODO: Implement Pareto dominance check
         # Use all() and any() to check the two conditions for dominance
-        individual = np.asarray(individual)
-        other_individual = np.asarray(other_individual)
-        return np.all(individual >= other_individual) and np.any(individual > other_individual)
+        return all(x >= y for x, y in zip(individual, other_individual)) and any(x > y for x, y in zip(individual, other_individual))
+
 
     def fast_nondominated_sort(self, fitness: np.ndarray) -> Tuple[List[List[int]], List[int]]:
         """Performs fast non-dominated sorting to rank solutions into Pareto fronts.
@@ -390,9 +389,6 @@ class NSGAII(EA):
         # 1. Sort the front by that objective
         # 2. Assign infinite distance to boundary solutions
         # 3. Compute normalized distance for interior solutions
-        
-        n_solutions = len(front)
-        n_objectives = fitness.shape[1]
 
         if n_solutions == 0:
             return np.array([])
@@ -401,28 +397,26 @@ class NSGAII(EA):
         if n_solutions == 2:
             return np.array([np.inf, np.inf])
 
-        distance = np.zeros(n_solutions)
-
-        for obj in range(n_objectives):
-            sorted_pos = sorted(range(n_solutions), key=lambda i: fitness[front[i], obj])
+        for m in range(n_objectives):
+            sorted_pos = np.argsort(fitness[front, m])
 
             distance[sorted_pos[0]] = np.inf
             distance[sorted_pos[-1]] = np.inf
 
-            obj_values = [fitness[front[i], obj] for i in sorted_pos]
-            obj_min = obj_values[0]
-            obj_max = obj_values[-1]
+            obj_min = fitness[front[sorted_pos[0]], m]
+            obj_max = fitness[front[sorted_pos[-1]], m]
+            obj_range = obj_max - obj_min
 
-            if obj_max == obj_min:
+            if obj_range == 0:
                 continue
 
             for k in range(1, n_solutions - 1):
                 if np.isinf(distance[sorted_pos[k]]):
                     continue
 
-                prev_val = fitness[front[sorted_pos[k - 1]], obj]
-                next_val = fitness[front[sorted_pos[k + 1]], obj]
-                distance[sorted_pos[k]] += (next_val - prev_val) / (obj_max - obj_min)
+                prev_val = fitness[front[sorted_pos[k - 1]], m]
+                next_val = fitness[front[sorted_pos[k + 1]], m]
+                distance[sorted_pos[k]] += (next_val - prev_val) / obj_range
 
         return distance
 
@@ -452,13 +446,11 @@ class NSGAII(EA):
             return individual_idx
         elif population_rank[individual_idx] > population_rank[other_individual_idx]:
             return other_individual_idx
-
-        if crowding_distances[individual_idx] > crowding_distances[other_individual_idx]:
-            return individual_idx
-        elif crowding_distances[individual_idx] < crowding_distances[other_individual_idx]:
-            return other_individual_idx
-
-        return individual_idx
+        elif population_rank[individual_idx] == population_rank[other_individual_idx]:
+            if crowding_distances[individual_idx] > crowding_distances[other_individual_idx]:
+                return individual_idx
+            else:
+                return other_individual_idx
 
     def tournament_selection(self, population_rank: List[int],
                              crowding_distances: np.ndarray,

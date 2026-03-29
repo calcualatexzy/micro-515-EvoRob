@@ -143,11 +143,11 @@ def test_exercise_implementation():
         # Points: [1,1], [2,2], [3,3], [4,4], [5,5] (diagonal line)
         test_fitness = np.array(
             [
-                [1, 1],
-                [2, 2],
+                [1, 5],
+                [2, 4.5],
                 [3, 3],
-                [4, 4],
-                [5, 5],
+                [4, 2],
+                [5, 1],
             ]
         )
         front_indices = [0, 1, 2, 3, 4]  # All in same front
@@ -809,16 +809,16 @@ if __name__ == "__main__":
 
     # Uncomment to run full NSGA-II evolution:
     run_evolution_nsga(
-        num_generations=1500,
-        population_size=250,
+        num_generations=400,
+        population_size=500,
         run_evaluation=False,
         compute_score=True,
         random_seed=42,
         n_repeats=2,
         mutation_prob=0.3,
-        crossover_prob=0.5,
+        crossover_prob=0.7,
         bounds=(-1, 1),
-        n_parents=50,
+        n_parents=100,
         ckpt_interval=100,
         checkpoint_path=None,
     )
