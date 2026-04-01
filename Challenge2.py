@@ -824,9 +824,9 @@ if __name__ == "__main__":
     )
 
     # Uncomment to replay your checkpoint
-    # replay_checkpoint(
-    #     checkpoint_path="./results/nsga_multi_terrain_ckpt/99"
-    # )
+    replay_checkpoint(
+        checkpoint_path="results/PassiveWalker-v0/20260330_061708_nsga_ckpts/800"
+    )
 
     # Uncomment to plot Pareto fronts from checkpoint
     # plot_pareto_fronts_from_checkpoint(

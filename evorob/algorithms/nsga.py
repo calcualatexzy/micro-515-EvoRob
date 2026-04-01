@@ -1,4 +1,4 @@
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 
 import numpy as np
 
@@ -25,7 +25,7 @@ class NSGAII(EA):
         min (float): Lower bound for parameter values.
         max (float): Upper bound for parameter values.
         current_gen (int): Current generation counter.
-        mutation_prob (float): Mutation probability.
+        mutation_prob (float): Differential evolution scale factor.
         crossover_prob (float): Crossover probability.
         current_population (np.ndarray): Current parent population.
 
@@ -59,7 +59,7 @@ class NSGAII(EA):
         :param n_parents: number of parents
         :param num_generations: number of generations
         :param bounds: parameter bounds
-        :param mutation_prob: mutation probability
+        :param mutation_prob: differential evolution scale factor
         :param crossover_prob: crossover probability
         :param output_dir: output directory for checkpoints
         """
@@ -71,6 +71,9 @@ class NSGAII(EA):
         self.max = bounds[1]
         self.n_gen = num_generations
         self.current_gen = 0
+        # Keep the public argument name for compatibility, but internally this
+        # value acts as the DE mutation scale factor F rather than a probability.
+        self.de_weight = mutation_prob
         self.mutation_prob = mutation_prob
         self.crossover_prob = crossover_prob
 
@@ -86,6 +89,8 @@ class NSGAII(EA):
         # Initialize current_population for first generation
         self.current_population = None
         self.fitness = None
+        self.parent_pool: Optional[np.ndarray] = None
+        self.parent_pool_fitness: Optional[np.ndarray] = None
 
     def ask(self) -> np.ndarray:
         """Generates a new population of candidate solutions.
@@ -135,32 +140,26 @@ class NSGAII(EA):
         self.current_population = parents_population
         self.fitness = parents_fitness
 
+        # Use the full elite population as the mating pool, as in standard NSGA-II.
+        self.parent_pool = self.current_population
+        self.parent_pool_fitness = self.fitness
+
         #% Some bookkeeping
         self.full_f.append(fitness)
         self.full_x.append(population)
         self.f = fitness
         self.x = population
 
-        fitness_sums = fitness.sum(axis=1)
-        best_in_current_gen_idx = np.argmax(fitness_sums)
-
-        current_best_fitness = fitness[best_in_current_gen_idx]
-        current_best_x = population[best_in_current_gen_idx]
-
-        if self.current_gen == 0:
-            self.f_best_so_far = current_best_fitness
-            self.x_best_so_far = current_best_x
-        else:
-            if np.all(current_best_fitness >= self.f_best_so_far):
-                if np.any(current_best_fitness > self.f_best_so_far):
-                    self.f_best_so_far = current_best_fitness
-                    self.x_best_so_far = current_best_x
+        robust_scores = np.min(self.fitness, axis=1)
+        best_in_current_gen_idx = int(np.argmax(robust_scores))
+        self.f_best_so_far = self.fitness[best_in_current_gen_idx]
+        self.x_best_so_far = self.current_population[best_in_current_gen_idx]
 
         if self.current_gen % 5 == 0:
-            print(f"Generation {self.current_gen}:\t{self.f_best_so_far}")
-            print(f"Mean fitness:\t{self.f.mean():.2f} +- {self.f.std():.2f}")
-            means = np.mean(fitness, axis=0)
-            stds = np.std(fitness, axis=0)
+            print(f"Generation {self.current_gen}:\tbest robust {robust_scores[best_in_current_gen_idx]:.2f}")
+            print(f"Mean fitness:\t{self.fitness.mean():.2f} +- {self.fitness.std():.2f}")
+            means = np.mean(self.fitness, axis=0)
+            stds = np.std(self.fitness, axis=0)
             print(f"Mean fitness per obj: {[f'{m:.2f} +-{s:.2f}' for m, s in zip(means, stds)]}")
 
         if save_checkpoint:
@@ -182,7 +181,7 @@ class NSGAII(EA):
         """Creates offspring using tournament selection, mutation and crossover.
         
         Uses tournament selection based on Pareto rank and crowding distance
-        to select parents, then applies differential evolution mutation.
+        to select parents, then applies a DE/rand/1-style variation step.
         
         Args:
             population_size (int): Number of offspring to generate.
@@ -190,41 +189,45 @@ class NSGAII(EA):
         Returns:
             np.ndarray: Mutated and clipped offspring population.
         """
+        if self.parent_pool is None or self.parent_pool_fitness is None:
+            raise RuntimeError("parent_pool is not initialized. Call tell() before create_children().")
+
         new_offspring = np.empty((population_size, self.n_params))
 
         # Compute ranks and crowding distances for tournament selection
-        fronts, ranks = self.fast_nondominated_sort(self.fitness)
-        crowding = np.zeros(len(self.fitness))
+        fronts, ranks = self.fast_nondominated_sort(self.parent_pool_fitness)
+        crowding = np.zeros(len(self.parent_pool_fitness))
         for front in fronts:
-            dist = self.compute_crowding_distance(self.fitness, front)
+            dist = self.compute_crowding_distance(self.parent_pool_fitness, front)
             for i, idx in enumerate(front):
                 crowding[idx] = dist[i]
+
+        pool_size = len(self.parent_pool)
+        if pool_size < 3:
+            noise = np.random.normal(0.0, 0.05, size=(population_size, self.n_params))
+            return np.clip(
+                np.repeat(self.parent_pool[:1], population_size, axis=0) + noise,
+                self.min,
+                self.max,
+            )
 
         for i in range(population_size):
             # Select parent using tournament selection
             parent_idx = self.tournament_selection(ranks, crowding, tournament_size=2)
 
-            # Select 3 different individuals for differential evolution
-            r0 = parent_idx
-            while r0 == parent_idx:
-                r0 = np.random.randint(0, population_size)
-            r1 = r0
-            while r1 == r0 or r1 == parent_idx:
-                r1 = np.random.randint(0, population_size)
-            r2 = r1
-            while r2 == r1 or r2 == r0 or r2 == parent_idx:
-                r2 = np.random.randint(0, population_size)
+            candidates = np.delete(np.arange(pool_size), parent_idx)
+            r1, r2 = np.random.choice(candidates, size=2, replace=False)
 
             jrand = np.random.randint(0, self.n_params)
             for j in range(self.n_params):
                 if np.random.random() <= self.crossover_prob or j == jrand:
                     new_offspring[i][j] = (
-                            self.current_population[parent_idx][j]
-                            + self.mutation_prob
-                            * (self.current_population[r1][j] - self.current_population[r2][j])
+                            self.parent_pool[parent_idx][j]
+                            + self.de_weight
+                            * (self.parent_pool[r1][j] - self.parent_pool[r2][j])
                     )
                 else:
-                    new_offspring[i][j] = self.current_population[parent_idx][j]
+                    new_offspring[i][j] = self.parent_pool[parent_idx][j]
         mutated_population = np.clip(new_offspring, self.min, self.max)
         return mutated_population
 
@@ -288,8 +291,6 @@ class NSGAII(EA):
         Returns:
             bool: True if individual dominates other_individual.
         """
-        # TODO: Implement Pareto dominance check
-        # Use all() and any() to check the two conditions for dominance
         return all(x >= y for x, y in zip(individual, other_individual)) and any(x > y for x, y in zip(individual, other_individual))
 
 
@@ -318,14 +319,9 @@ class NSGAII(EA):
 
         for individual_a in range(len(fitness)):
             for individual_b in range(len(fitness)):
-                # does individual_a dominate individual_b?
                 if self.dominates(fitness[individual_a], fitness[individual_b]):
-                    # TODO: Track that individual_a dominates individual_b
                     domination_lists[individual_a].append(individual_b)
-
-                # does individual_b dominate individual_a?
                 elif self.dominates(fitness[individual_b], fitness[individual_a]):
-                    # TODO: Track that individual_a is dominated by individual_b
                     domination_counts[individual_a] += 1
 
             # if solution dominates all
@@ -344,10 +340,7 @@ class NSGAII(EA):
 
             # iterate through all items in previous front
             for individual_a in pareto_fronts[i]:
-                # check all other items which are dominated by this item
                 for individual_b in domination_lists[individual_a]:
-                    # TODO: Update domination count and check if individual_b
-                    # should be added to the next front
                     domination_counts[individual_b] -= 1
                     if domination_counts[individual_b] == 0:
                         population_rank[individual_b] = i + 1
@@ -384,11 +377,6 @@ class NSGAII(EA):
 
         # Initialize distances to zero
         distance = np.zeros(n_solutions)
-
-        # TODO: For each objective:
-        # 1. Sort the front by that objective
-        # 2. Assign infinite distance to boundary solutions
-        # 3. Compute normalized distance for interior solutions
 
         if n_solutions == 0:
             return np.array([])
@@ -438,10 +426,6 @@ class NSGAII(EA):
         Returns:
             int: Index of the preferred individual.
         """
-        # TODO: Compare two individuals
-        # 1. Prefer lower rank (better Pareto front)
-        # 2. If same rank, prefer larger crowding distance
-        
         if population_rank[individual_idx] < population_rank[other_individual_idx]:
             return individual_idx
         elif population_rank[individual_idx] > population_rank[other_individual_idx]:
