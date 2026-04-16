@@ -506,9 +506,9 @@ def main():
     world.n_weights = world.controller.n_params
     world.n_params = world.n_weights + world.n_body_params
     n_parameters = world.n_params
-    population_size = 12
+    population_size = 100
     mutation_sigma = 0.3
-    num_generations = 10
+    num_generations = 150
     bounds = (-1, 1)
 
     results_dir = join(ROOT_DIR, "results", ENV_NAME, "single")
