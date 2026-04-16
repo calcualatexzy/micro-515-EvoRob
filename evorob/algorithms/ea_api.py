@@ -1,4 +1,5 @@
 import numpy as np
+import cma
 
 from evorob.algorithms.base_ea import EA
 
@@ -42,11 +43,20 @@ class EvoAlgAPI(EA):
         self.x = None
         self.f = None
 
-        raise NotImplementedError(
-            "TODO: Initialize your chosen EA framework.\n"
-            "Recommended: pip install cma, then import cma and create CMAEvolutionStrategy.\n"
-            "See https://github.com/CMA-ES/pycma for documentation."
-        )
+        if "sigma" in kwargs:
+            sigma = kwargs["sigma"]
+        else:
+            sigma = 1.0
+
+        opts = {
+            "popsize": population_size,
+            "maxiter": num_generations,
+            "verbose": -1,
+            "CMA_mu": population_size // 5,
+        }
+
+        x0 = np.zeros(n_params)
+        self.cma_es = cma.CMAEvolutionStrategy(x0, sigma, opts)
 
     def ask(self) -> np.ndarray:
         """Sample population from the algorithm.
@@ -58,10 +68,9 @@ class EvoAlgAPI(EA):
         # TODO: Get new population from your EA
         # Make sure the returned array has shape (population_size, n_params)
 
-        raise NotImplementedError(
-            "TODO: Implement ask() to sample new population.\n"
-            "This should return an array of shape (population_size, n_params)."
-        )
+        X = np.array(self.cma_es.ask())
+        assert X.shape == (self.population_size, self.n_params)
+        return X
 
     def tell(self, population: np.ndarray, fitnesses: np.ndarray, save_checkpoint: bool = False) -> None:
         """Update the algorithm with evaluated population.
@@ -76,6 +85,21 @@ class EvoAlgAPI(EA):
         # Note: Some algorithms minimize, others maximize.
         # Adjust accordingly (negate fitnesses if needed).
         
+        # CMA-ES minimizes objective values, while our framework maximizes fitness.
+        # Convert invalid values to very poor fitness, then negate for minimization.
+        fitnesses = np.asarray(fitnesses, dtype=float)
+        safe_fitnesses = np.where(np.isfinite(fitnesses), fitnesses, -np.inf)
+        cma_objective = -safe_fitnesses
+
+        # Replace +inf objectives (from -(-inf)) with a large finite penalty.
+        if not np.all(np.isfinite(cma_objective)):
+            finite_objectives = cma_objective[np.isfinite(cma_objective)]
+            fallback = (np.max(finite_objectives) + 1.0) if finite_objectives.size > 0 else 1e9
+            cma_objective = np.where(np.isfinite(cma_objective), cma_objective, fallback)
+
+        # Update CMA-ES with minimization objective
+        self.cma_es.tell(population, cma_objective)
+
         # After updating the EA, do bookkeeping for checkpointing:
         self.full_f.append(fitnesses)
         self.full_x.append(population)
@@ -91,9 +115,3 @@ class EvoAlgAPI(EA):
         if save_checkpoint:
             self.save_checkpoint()
         self.current_gen += 1
-
-        raise NotImplementedError(
-            "TODO: Implement tell() to update the EA.\n"
-            "Pass the population and their fitness values to update the search distribution.\n"
-            "Don't forget to add the bookkeeping code shown above for checkpointing!"
-        )
