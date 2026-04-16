@@ -13,7 +13,7 @@ from tqdm import trange
 
 #TODO: set for cmaes
 from evorob.algorithms.ea_api_sol import EvoAlgAPI
-from evorob.algorithms.nsga import NSGAII
+from evorob.algorithms.nsga_sol import NSGAII
 from evorob.utils.filesys import (
     get_distinct_filename,
     get_last_checkpoint_dir,
@@ -492,14 +492,14 @@ def main():
     world.n_params = world.n_weights + world.n_body_params
     genotype = np.random.uniform(-1, 1, world.n_params)
 
-    result_dir = "results/PassiveWalker-v0/20260312_160552_neural_controller_ckpts"
+    result_dir = "prev_results/mlp"
     prev_best = np.load(join(get_last_checkpoint_dir(result_dir), "x_best.npy")) # load previous run
-    genotype[:-8] = prev_best
+    genotype[:-8] = prev_best * 10.0 # hacking a legacy
 
     genotype[-8::2] = -0.6  # fix upper leg length 0.2m
     genotype[-7::2] = 1.0     # fix lower leg length 0.6m
     world.update_robot_xml(genotype)
-    world.visualise_individual(genotype)
+    # world.visualise_individual(genotype)
 
     #%% Evolve open-loop so2
     world = AntWorld()
@@ -532,7 +532,7 @@ def main():
     action_space = 8 # Change controller
     world.controller = NeuralNetworkController(input_size=state_space,
                                                output_size=action_space,
-                                               hidden_size=action_space)
+                                               hidden_size=16)
     world.n_weights = world.controller.n_params
     world.n_params = world.n_weights + world.n_body_params
     n_parameters = world.n_params
@@ -555,7 +555,9 @@ def main():
                           opts["num_generations"],
                           (opts["min"], opts["max"]),
                           opts["mutation_prob"],
-                          opts["crossover_prob"])
+                          opts["crossover_prob"],
+                          loaded_weights=prev_best * 10.0,
+                          )
     ea_multi_obj.directory_name = results_dir
     run_EA_multi(ea_multi_obj, world)
 

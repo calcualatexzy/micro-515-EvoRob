@@ -21,6 +21,7 @@ class CMAESAPI(EA):
         sigma: float = 0.3,
         bounds: Tuple[int, int] = (-1, 1),
         output_dir: str = "./results/CMAES",
+        loaded_weights: np.ndarray|None = None,
     ):
         self.population_size = population_size
         self.n_gen = num_generations
@@ -38,7 +39,8 @@ class CMAESAPI(EA):
 
         # Initialize with random mean
         initial_mean = np.random.uniform(bounds[0], bounds[1], n_params)
-
+        if loaded_weights is not None:
+            initial_mean[:loaded_weights.shape[0]] = loaded_weights
         # Create CMA-ES optimizer
         opts = {"popsize": population_size, "bounds": bounds}
         self.es = cma.CMAEvolutionStrategy(x0=initial_mean, sigma0=sigma, inopts=opts)

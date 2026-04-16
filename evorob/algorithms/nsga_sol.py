@@ -50,6 +50,7 @@ class NSGAII(EA):
             mutation_prob: float = 0.3,
             crossover_prob: float = 0.1,
             output_dir: str = "./results/NSGA",
+            loaded_weights: np.ndarray|None = None,
     ) -> None:
         """
         Initializes the NSGA-II algorithm.
@@ -86,6 +87,8 @@ class NSGAII(EA):
         # Initialize current_population for first generation
         self.current_population = None
         self.fitness = None
+
+        self.loaded_weights = loaded_weights
 
     def ask(self) -> np.ndarray:
         """Generates a new population of candidate solutions.
@@ -174,9 +177,13 @@ class NSGAII(EA):
         Returns:
             np.ndarray: Initial population with shape (n_pop, n_params).
         """
-        return np.random.uniform(
+        x_0 = np.random.uniform(
             low=self.min, high=self.max, size=(self.n_pop, self.n_params)
         )
+        if self.loaded_weights is not None:
+            n_loaded = self.loaded_weights.shape[0]
+            x_0[:, :n_loaded] = np.clip(self.loaded_weights, self.min, self.max)
+        return x_0
 
     def create_children(self, population_size: int) -> np.ndarray:
         """Creates offspring using tournament selection, mutation and crossover.
