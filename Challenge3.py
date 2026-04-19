@@ -4,6 +4,7 @@ from os.path import join
 from tempfile import TemporaryDirectory
 from PIL import Image
 import scipy.ndimage
+import matplotlib.pyplot as plt
 
 import gymnasium as gym
 import imageio
@@ -20,7 +21,8 @@ from evorob.utils.filesys import (
     get_project_root,
 )
 from evorob.world.base import World
-from evorob.world.robot.controllers.mlp import NeuralNetworkController
+from evorob.world.robot.controllers.mlp_sol import NeuralNetworkController
+from evorob.world.robot.controllers.mlp import NeuralNetworkController_Custom
 from evorob.world.robot.controllers.so2 import SO2Controller
 from evorob.world.robot.controllers.mlp_hebbian import HebbianController
 from evorob.world.robot.morphology.ant_custom_robot import AntRobot
@@ -209,7 +211,8 @@ class AntWorld(World):
             rewards_full[step, ~done_mask] = rewards[~done_mask]
 
             # TODO: design appropriate moo-rewards
-            multi_obj_reward = np.array([infos["z_velocity"], -infos["ctrl_cost"]]).T # TODO
+            multi_obj_reward = np.array([infos["z_velocity"], infos["reward_forward"]]).T # TODO
+            # multi_obj_reward = np.array([infos["z_velocity"], -infos["ctrl_cost"]]).T # TODO
             multi_obj_rewards_full[step, ~done_mask] = multi_obj_reward[~done_mask]
 
             # Update the done mask based on the "done" and "truncated" flags
@@ -314,6 +317,207 @@ def _stats(values):
         "worst": float(np.min(a)),
         "median": float(np.median(a)),
     }
+
+
+def _coerce_fitness_history(full_f):
+    """Return fitness history as (n_generations, n_pop, n_objectives)."""
+    fitness_array = np.asarray(full_f, dtype=float)
+
+    if fitness_array.ndim == 1:
+        fitness_array = fitness_array[np.newaxis, :, np.newaxis]
+    elif fitness_array.ndim == 2:
+        fitness_array = fitness_array[:, :, np.newaxis]
+    elif fitness_array.ndim != 3:
+        raise ValueError(
+            "Expected fitness history with shape (n_gen, n_pop) or (n_gen, n_pop, n_obj)."
+        )
+
+    if fitness_array.shape[0] == 0 or fitness_array.shape[1] == 0:
+        raise ValueError("Cannot plot an empty fitness history.")
+
+    return fitness_array
+
+
+def plot_fitness(full_f, output_dir):
+    """Save fitness-over-generations plots for one or more objectives."""
+    fitness_array = _coerce_fitness_history(full_f)
+    generations = np.arange(1, len(fitness_array) + 1)
+    n_objectives = fitness_array.shape[2]
+
+    fig, axes = plt.subplots(1, n_objectives, figsize=(7 * n_objectives, 5), squeeze=False)
+    axes = axes.ravel()
+    if n_objectives == 1:
+        obj_labels = ["Fitness"]
+    else:
+        obj_labels = [f"Objective {i + 1}" for i in range(n_objectives)]
+
+    for obj_idx, (ax, label) in enumerate(zip(axes, obj_labels)):
+        obj_fitness = fitness_array[:, :, obj_idx]
+        best_per_gen = np.max(obj_fitness, axis=1)
+        mean_per_gen = np.mean(obj_fitness, axis=1)
+        std_per_gen = np.std(obj_fitness, axis=1)
+
+        ax.plot(
+            generations, best_per_gen,
+            label="Best", color="#B51F1F", linewidth=2, linestyle="--",
+        )
+        ax.plot(
+            generations, mean_per_gen,
+            label="Mean", color="#007480", linewidth=2,
+        )
+        ax.fill_between(
+            generations,
+            mean_per_gen - std_per_gen,
+            mean_per_gen + std_per_gen,
+            alpha=0.2, color="#007480", label="Mean +/- 1 std",
+        )
+        ax.set_xlabel("Generation")
+        ax.set_ylabel("Fitness")
+        ax.set_title(label)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle("Fitness over Generations", fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+
+    plot_path = os.path.join(output_dir, "fitness_plot.pdf")
+    fig.savefig(plot_path)
+    plt.close(fig)
+    print(f"Fitness plot saved to: {plot_path}")
+
+
+def plot_pareto_fronts(fitness, output_dir, num_generations=None, population_size=None):
+    """Plot Pareto fronts for a 2-objective fitness array or history.
+
+    Args:
+        fitness:         (n_pop, 2) fitness array for one generation, or
+                         (n_gen, n_pop, 2) history where the last generation is used.
+        output_dir:      Directory to save the plot.
+        num_generations: Number of generations (for title). Optional.
+        population_size: Population size (for title). Optional.
+    """
+    fitness = np.asarray(fitness, dtype=float)
+    if fitness.ndim == 3:
+        fitness = fitness[-1]
+
+    if fitness.ndim != 2 or fitness.shape[1] != 2:
+        raise ValueError(
+            "Pareto plotting expects shape (n_pop, 2) or (n_gen, n_pop, 2)."
+        )
+    if len(fitness) == 0:
+        raise ValueError("Cannot plot a Pareto front for an empty population.")
+
+    dummy_nsga = NSGAII(population_size=fitness.shape[0], n_opt_params=1)
+    fronts, _ = dummy_nsga.fast_nondominated_sort(fitness)
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    n_fronts = len(fronts)
+
+    # Top 3 fronts: distinct colors, connected by sorted lines
+    top_colors = ["#B51F1F", "#007480", "#4B0082"]
+    n_top = min(3, n_fronts)
+    for i in range(n_top):
+        fi = fitness[fronts[i]]
+        si = np.argsort(fi[:, 0])
+        fi_sorted = fi[si]
+        ax.plot(
+            fi_sorted[:, 0], fi_sorted[:, 1],
+            color=top_colors[i], alpha=0.5, linewidth=1.2, zorder=3,
+        )
+        ax.scatter(
+            fi[:, 0], fi[:, 1],
+            label=f"Front {i + 1}",
+            color=top_colors[i],
+            s=50,
+            edgecolors="white",
+            linewidths=0.5,
+            zorder=4,
+        )
+
+    # Remaining fronts: colormap
+    if n_fronts > 3:
+        remaining_cmap = plt.cm.coolwarm
+        for i in range(3, n_fronts):
+            fi = fitness[fronts[i]]
+            t = (i - 3) / max(n_fronts - 4, 1)
+            ax.scatter(
+                fi[:, 0], fi[:, 1],
+                label=f"Front {i + 1}" if i <= 5 else None,
+                color=remaining_cmap(t),
+                s=25,
+                alpha=0.5,
+                edgecolors="white",
+                linewidths=0.3,
+                zorder=2,
+            )
+
+    ax.set_xlabel("Fitness — Flat Terrain", fontsize=11)
+    ax.set_ylabel("Fitness — Ice Terrain", fontsize=11)
+    info = [f"{n_fronts} front{'s' if n_fronts > 1 else ''}"]
+    if num_generations is not None:
+        info.insert(0, f"gen {num_generations}")
+    if population_size is not None:
+        info.insert(1 if num_generations else 0, f"pop {population_size}")
+    ax.set_title(f"Pareto Fronts  ({',  '.join(info)})", fontsize=12)
+    ax.legend(fontsize=9, framealpha=0.9)
+    ax.grid(True, alpha=0.2)
+    fig.tight_layout()
+    pareto_path = os.path.join(output_dir, "pareto_fronts.pdf")
+    fig.savefig(pareto_path, dpi=150)
+    plt.close(fig)
+    print(f"Pareto front plot saved to: {pareto_path}")
+
+
+def plot_pareto_fronts_from_checkpoint(checkpoint_dir: str):
+    """Load fitness data from a checkpoint directory or results directory and plot Pareto fronts."""
+    checkpoint_dir = os.path.abspath(checkpoint_dir)
+    checkpoint_name = os.path.basename(checkpoint_dir)
+    checkpoint_parent = os.path.dirname(checkpoint_dir)
+
+    candidates = [
+        os.path.join(checkpoint_dir, "f.npy"),
+        os.path.join(checkpoint_dir, "full_f.npy"),
+    ]
+    if checkpoint_name.isdigit():
+        candidates.append(os.path.join(checkpoint_parent, "full_f.npy"))
+
+    fitness = None
+    generation_idx = int(checkpoint_name) + 1 if checkpoint_name.isdigit() else None
+    for fitness_path in candidates:
+        if not os.path.exists(fitness_path):
+            continue
+        try:
+            loaded = np.load(fitness_path)
+        except Exception as e:
+            print(f"Could not load fitness data from {fitness_path}: {e}")
+            continue
+
+        if loaded.ndim == 3 and generation_idx is not None and os.path.basename(fitness_path) == "full_f.npy":
+            if 0 < generation_idx <= loaded.shape[0]:
+                fitness = loaded[generation_idx - 1]
+            else:
+                fitness = loaded[-1]
+        else:
+            fitness = loaded[-1] if loaded.ndim == 3 else loaded
+
+        if fitness.ndim == 2 and fitness.shape[1] == 2:
+            break
+        fitness = None
+
+    if fitness is None:
+        print(
+            f"Could not find 2-objective fitness data in '{checkpoint_dir}' or its parent results directory."
+        )
+        return
+
+    save_dir = checkpoint_dir
+    plot_pareto_fronts(
+        fitness,
+        save_dir,
+        num_generations=generation_idx,
+        population_size=fitness.shape[0],
+    )
+
 
 
 def evaluate_checkpoint(
@@ -485,7 +689,7 @@ def main():
     # TODO Overwrite controller and load best run exercise 1
     state_space = 27
     action_space = 8 # Change controller
-    world.controller = NeuralNetworkController(input_size=state_space,
+    world.controller = NeuralNetworkController_Custom(input_size=state_space,
                                                output_size=action_space,
                                                hidden_size=16)
     world.n_weights = world.controller.n_params
@@ -494,7 +698,7 @@ def main():
 
     result_dir = "prev_results/mlp"
     prev_best = np.load(join(get_last_checkpoint_dir(result_dir), "x_best.npy")) # load previous run
-    genotype[:-8] = prev_best * 10.0 # hacking a legacy
+    genotype[:-8] = prev_best # hacking a legacy
 
     genotype[-8::2] = -0.6  # fix upper leg length 0.2m
     genotype[-7::2] = 1.0     # fix lower leg length 0.6m
@@ -506,15 +710,16 @@ def main():
     world.n_weights = world.controller.n_params
     world.n_params = world.n_weights + world.n_body_params
     n_parameters = world.n_params
-    population_size = 100
-    mutation_sigma = 0.3
-    num_generations = 150
+    population_size = 10 # 100
+    mutation_sigma = 0.5
+    num_generations = 1 # 150
     bounds = (-1, 1)
 
     results_dir = join(ROOT_DIR, "results", ENV_NAME, "single")
     ea_single = EvoAlgAPI(n_parameters, population_size, num_generations, mutation_sigma, bounds, results_dir)
 
     run_EA_single(ea_single, world)
+    plot_fitness(ea_single.full_f, results_dir)
 
     #%% visualise
     checkpoint = get_last_checkpoint_dir(results_dir)
@@ -532,7 +737,7 @@ def main():
     action_space = 8 # Change controller
     world.controller = NeuralNetworkController(input_size=state_space,
                                                output_size=action_space,
-                                               hidden_size=16)
+                                               hidden_size=action_space)
     world.n_weights = world.controller.n_params
     world.n_params = world.n_weights + world.n_body_params
     n_parameters = world.n_params
@@ -546,7 +751,7 @@ def main():
     opts["num_parents"] = population_size//2
     opts["num_generations"] = 50
     opts["mutation_prob"] = 0.2
-    opts["crossover_prob"] = 0.5
+    opts["crossover_prob"] = 0.7
 
     results_dir = join(ROOT_DIR, "results", ENV_NAME, "multi")
     ea_multi_obj = NSGAII(population_size,
@@ -556,10 +761,16 @@ def main():
                           (opts["min"], opts["max"]),
                           opts["mutation_prob"],
                           opts["crossover_prob"],
-                          loaded_weights=prev_best * 10.0,
                           )
     ea_multi_obj.directory_name = results_dir
     run_EA_multi(ea_multi_obj, world)
+    plot_fitness(ea_multi_obj.full_f, results_dir)
+    plot_pareto_fronts(
+        ea_multi_obj.full_f,
+        results_dir,
+        num_generations=ea_multi_obj.n_gen,
+        population_size=population_size,
+    )
 
     #%% visualise
     checkpoint = get_last_checkpoint_dir(results_dir)

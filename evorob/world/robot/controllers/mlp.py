@@ -3,12 +3,13 @@ import numpy as np
 from evorob.world.robot.controllers.base import Controller
 
 
-class NeuralNetworkController(Controller):
+class NeuralNetworkController_Custom(Controller):
     def __init__(
         self,
         input_size: int,
         output_size: int,
         hidden_size: int = 16,
+        load_weights: np.ndarray = None,
     ):
         """Initialize a simple feedforward neural network.
 
@@ -42,6 +43,9 @@ class NeuralNetworkController(Controller):
         self.n_params_b2 = output_size
 
         self.n_params = self.get_num_params()
+        
+        if load_weights is not None:
+            self.set_weights(load_weights)
 
 
     def get_action(self, state):
