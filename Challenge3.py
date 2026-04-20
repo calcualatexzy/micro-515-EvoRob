@@ -95,7 +95,7 @@ class AntWorld(World):
         return envs
 
     def geno2pheno(self, genotype):
-        control_weights = genotype[:self.n_weights]*0.1
+        control_weights = genotype[:self.n_weights]
         body_params = (genotype[self.n_weights:]+1)/4+0.1
         assert len(body_params) == self.n_body_params
         assert len(control_weights) == self.n_weights
@@ -705,14 +705,19 @@ def main():
     world.update_robot_xml(genotype)
     # world.visualise_individual(genotype)
 
-    #%% Evolve open-loop so2
+    #%% Evolve open-loop mlp
     world = AntWorld()
+    state_space = 27
+    action_space = 8 # Change controller
+    world.controller = NeuralNetworkController_Custom(input_size=state_space,
+                                               output_size=action_space,
+                                               hidden_size=16)
     world.n_weights = world.controller.n_params
     world.n_params = world.n_weights + world.n_body_params
     n_parameters = world.n_params
-    population_size = 10 # 100
-    mutation_sigma = 0.5
-    num_generations = 1 # 150
+    population_size = 100
+    mutation_sigma = 0.3
+    num_generations = 150
     bounds = (-1, 1)
 
     results_dir = join(ROOT_DIR, "results", ENV_NAME, "single")
