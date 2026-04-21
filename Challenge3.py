@@ -95,7 +95,7 @@ class AntWorld(World):
         return envs
 
     def geno2pheno(self, genotype):
-        control_weights = genotype[:self.n_weights]
+        control_weights = genotype[:self.n_weights]*0.1
         body_params = (genotype[self.n_weights:]+1)/4+0.1
         assert len(body_params) == self.n_body_params
         assert len(control_weights) == self.n_weights
@@ -657,24 +657,26 @@ def evaluate_checkpoint(
     return results
 
 
-def run_EA_single(ea_single, world):
-    for _ in trange(ea_single.n_gen):
+def run_EA_single(ea_single, world, save_every=1):
+    for generation_idx in trange(ea_single.n_gen):
         pop = ea_single.ask()
         fitnesses_gen = np.empty(len(pop))
         for index, genotype in enumerate(pop):
             fit_ind, _ = world.evaluate_individual(genotype)
             fitnesses_gen[index] = fit_ind
-        ea_single.tell(pop, fitnesses_gen, save_checkpoint=True)
+        should_save = save_every > 0 and (generation_idx + 1) % save_every == 0
+        ea_single.tell(pop, fitnesses_gen, save_checkpoint=should_save)
 
 
-def run_EA_multi(ea_multi, world):
-    for _ in trange(ea_multi.n_gen):
+def run_EA_multi(ea_multi, world, save_every=1):
+    for generation_idx in trange(ea_multi.n_gen):
         pop = ea_multi.ask()
         fitnesses_gen = np.empty((len(pop), 2))
         for index, genotype in enumerate(pop):
             _, fit_ind = world.evaluate_individual(genotype)
             fitnesses_gen[index] = fit_ind
-        ea_multi.tell(pop, fitnesses_gen, save_checkpoint=True)
+        should_save = save_every > 0 and (generation_idx + 1) % save_every == 0
+        ea_multi.tell(pop, fitnesses_gen, save_checkpoint=should_save)
 
 
 def main():
@@ -717,13 +719,13 @@ def main():
     n_parameters = world.n_params
     population_size = 100
     mutation_sigma = 0.3
-    num_generations = 150
+    num_generations = 1200
     bounds = (-1, 1)
 
     results_dir = join(ROOT_DIR, "results", ENV_NAME, "single")
     ea_single = EvoAlgAPI(n_parameters, population_size, num_generations, mutation_sigma, bounds, results_dir)
 
-    run_EA_single(ea_single, world)
+    run_EA_single(ea_single, world, save_every=50)
     plot_fitness(ea_single.full_f, results_dir)
 
     #%% visualise
@@ -754,7 +756,7 @@ def main():
     opts["min"] = -1
     opts["max"] = 1
     opts["num_parents"] = population_size//2
-    opts["num_generations"] = 50
+    opts["num_generations"] = 400
     opts["mutation_prob"] = 0.2
     opts["crossover_prob"] = 0.7
 
@@ -768,7 +770,7 @@ def main():
                           opts["crossover_prob"],
                           )
     ea_multi_obj.directory_name = results_dir
-    run_EA_multi(ea_multi_obj, world)
+    run_EA_multi(ea_multi_obj, world, save_every=50)
     plot_fitness(ea_multi_obj.full_f, results_dir)
     plot_pareto_fronts(
         ea_multi_obj.full_f,
