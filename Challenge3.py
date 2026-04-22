@@ -698,53 +698,56 @@ def main():
     world.n_params = world.n_weights + world.n_body_params
     genotype = np.random.uniform(-1, 1, world.n_params)
 
-    result_dir = "prev_results/mlp"
+    result_dir = "results/AntHill-v0/single"
     prev_best = np.load(join(get_last_checkpoint_dir(result_dir), "x_best.npy")) # load previous run
-    genotype[:-8] = prev_best # hacking a legacy
+    # genotype[:-8] = prev_best # hacking a legacy
 
-    genotype[-8::2] = -0.6  # fix upper leg length 0.2m
-    genotype[-7::2] = 1.0     # fix lower leg length 0.6m
-    world.update_robot_xml(genotype)
+    # genotype[-8::2] = -0.6  # fix upper leg length 0.2m
+    # genotype[-7::2] = 1.0     # fix lower leg length 0.6m
+    # world.update_robot_xml(genotype)
     # world.visualise_individual(genotype)
 
     #%% Evolve open-loop mlp
-    world = AntWorld()
-    state_space = 27
-    action_space = 8 # Change controller
-    world.controller = NeuralNetworkController_Custom(input_size=state_space,
-                                               output_size=action_space,
-                                               hidden_size=16)
-    world.n_weights = world.controller.n_params
-    world.n_params = world.n_weights + world.n_body_params
-    n_parameters = world.n_params
-    population_size = 100
-    mutation_sigma = 0.3
-    num_generations = 1200
-    bounds = (-1, 1)
+    # world = AntWorld()
+    # state_space = 27
+    # action_space = 8 # Change controller
+    # world.controller = NeuralNetworkController_Custom(input_size=state_space,
+    #                                            output_size=action_space,
+    #                                            hidden_size=16)
+    # world.n_weights = world.controller.n_params
+    # world.n_params = world.n_weights + world.n_body_params
+    # n_parameters = world.n_params
+    # population_size = 100
+    # mutation_sigma = 0.3
+    # num_generations = 1200
+    # bounds = (-1, 1)
 
-    results_dir = join(ROOT_DIR, "results", ENV_NAME, "single")
-    ea_single = EvoAlgAPI(n_parameters, population_size, num_generations, mutation_sigma, bounds, results_dir)
+    # results_dir = join(ROOT_DIR, "results", ENV_NAME, "single")
+    # ea_single = EvoAlgAPI(n_parameters, population_size, num_generations, mutation_sigma, bounds, results_dir)
 
-    run_EA_single(ea_single, world, save_every=50)
-    plot_fitness(ea_single.full_f, results_dir)
+    # run_EA_single(ea_single, world, save_every=50)
+    # plot_fitness(ea_single.full_f, results_dir)
 
-    #%% visualise
-    checkpoint = get_last_checkpoint_dir(results_dir)
-    best_individual = np.load(join(results_dir, checkpoint, "x_best.npy"))
-    world.update_robot_xml(best_individual)
-    env = world.create_env(max_episode_steps=-1)
-    video_name = get_distinct_filename(join(results_dir, "best.mp4"))
-    print(f"Finished ES run, generating video [{video_name}]...")
-    world.generate_best_individual_video(env, video_name=video_name, n_steps=500)
+    # #%% visualise
+    # checkpoint = get_last_checkpoint_dir(results_dir)
+    # best_individual = np.load(join(results_dir, checkpoint, "x_best.npy"))
+    # world.update_robot_xml(best_individual)
+    # env = world.create_env(max_episode_steps=-1)
+    # video_name = get_distinct_filename(join(results_dir, "best.mp4"))
+    # print(f"Finished ES run, generating video [{video_name}]...")
+    # world.generate_best_individual_video(env, video_name=video_name, n_steps=500)
 
 
     #%% Optimise multi-objective
     world = AntWorld()
     state_space = 27
     action_space = 8 # Change controller
-    world.controller = NeuralNetworkController(input_size=state_space,
+    world.controller = NeuralNetworkController_Custom(input_size=state_space,
                                                output_size=action_space,
-                                               hidden_size=action_space)
+                                               hidden_size=16,
+                                               load_weights=prev_best[:-action_space],
+                                               )
+    genotype = prev_best
     world.n_weights = world.controller.n_params
     world.n_params = world.n_weights + world.n_body_params
     n_parameters = world.n_params
