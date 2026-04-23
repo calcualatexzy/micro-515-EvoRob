@@ -141,14 +141,14 @@ class NSGAII(EA):
         #% Some bookkeeping
         self.full_f.append(fitness)
         self.full_x.append(population)
-        self.f = fitness
-        self.x = population
+        self.f = parents_fitness
+        self.x = parents_population
 
-        fitness_sums = fitness.sum(axis=1)
+        fitness_sums = parents_fitness.sum(axis=1)
         best_in_current_gen_idx = np.argmax(fitness_sums)
 
-        current_best_fitness = fitness[best_in_current_gen_idx]
-        current_best_x = population[best_in_current_gen_idx]
+        current_best_fitness = parents_fitness[best_in_current_gen_idx]
+        current_best_x = parents_population[best_in_current_gen_idx]
 
         if self.current_gen == 0:
             self.f_best_so_far = current_best_fitness
@@ -162,8 +162,8 @@ class NSGAII(EA):
         if self.current_gen % 5 == 0:
             print(f"Generation {self.current_gen}:\t{self.f_best_so_far}")
             print(f"Mean fitness:\t{self.f.mean():.2f} +- {self.f.std():.2f}")
-            means = np.mean(fitness, axis=0)
-            stds = np.std(fitness, axis=0)
+            means = np.mean(self.f, axis=0)
+            stds = np.std(self.f, axis=0)
             print(f"Mean fitness per obj: {[f'{m:.2f} +-{s:.2f}' for m, s in zip(means, stds)]}")
 
         if save_checkpoint:
@@ -181,8 +181,10 @@ class NSGAII(EA):
             low=self.min, high=self.max, size=(self.n_pop, self.n_params)
         )
         if self.loaded_weights is not None:
-            n_loaded = self.loaded_weights.shape[0]
-            x_0[:, :n_loaded] = np.clip(self.loaded_weights, self.min, self.max)
+            loaded = np.asarray(self.loaded_weights, dtype=float).reshape(-1)
+            n_loaded = min(loaded.shape[0], self.n_params)
+            # Warmstart with one exact elite while preserving population diversity.
+            x_0[0, :n_loaded] = np.clip(loaded[:n_loaded], self.min, self.max)
         return x_0
 
     def create_children(self, population_size: int) -> np.ndarray:

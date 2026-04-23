@@ -1,3 +1,4 @@
+import csv
 import os
 import xml.etree.ElementTree as xml
 from os.path import join
@@ -33,6 +34,45 @@ from evorob.world.robot.morphology.ant_custom_robot import AntRobot
 
 ROOT_DIR = get_project_root()
 ENV_NAME = "AntHill-v0"
+BODY_PARAM_NAMES = [
+    "front_left_leg",
+    "front_left_ankle",
+    "front_right_leg",
+    "front_right_ankle",
+    "back_left_leg",
+    "back_left_ankle",
+    "back_right_leg",
+    "back_right_ankle",
+]
+BODY_PARAM_LABELS = {
+    "front_left_leg": "Front-left upper",
+    "front_left_ankle": "Front-left lower",
+    "front_right_leg": "Front-right upper",
+    "front_right_ankle": "Front-right lower",
+    "back_left_leg": "Back-left upper",
+    "back_left_ankle": "Back-left lower",
+    "back_right_leg": "Back-right upper",
+    "back_right_ankle": "Back-right lower",
+}
+MORPHOLOGY_METRIC_NAMES = [
+    "avg_upper",
+    "avg_lower",
+    "avg_front_total",
+    "avg_hind_total",
+    "avg_total_limb",
+]
+MORPHOLOGY_METRIC_LABELS = {
+    "avg_upper": "Avg. upper",
+    "avg_lower": "Avg. lower",
+    "avg_front_total": "Avg. front total",
+    "avg_hind_total": "Avg. hind total",
+    "avg_total_limb": "Avg. limb total",
+}
+INDIVIDUAL_DISPLAY_NAMES = {
+    "specialist_obj1": "Specialist Obj. 1",
+    "specialist_obj2": "Specialist Obj. 2",
+    "generalist": "Generalist",
+}
 
 
 class AntWorld(World):
@@ -211,8 +251,8 @@ class AntWorld(World):
             rewards_full[step, ~done_mask] = rewards[~done_mask]
 
             # TODO: design appropriate moo-rewards
-            multi_obj_reward = np.array([infos["z_velocity"], infos["reward_forward"]]).T # TODO
-            # multi_obj_reward = np.array([infos["z_velocity"], -infos["ctrl_cost"]]).T # TODO
+            # multi_obj_reward = np.array([infos["z_velocity"], infos["reward_forward"]]).T # TODO
+            multi_obj_reward = np.array([infos["reward_forward"]+infos["healthy_reward"], -infos["ctrl_cost"]]).T # TODO
             multi_obj_rewards_full[step, ~done_mask] = multi_obj_reward[~done_mask]
 
             # Update the done mask based on the "done" and "truncated" flags
@@ -451,8 +491,8 @@ def plot_pareto_fronts(fitness, output_dir, num_generations=None, population_siz
                 zorder=2,
             )
 
-    ax.set_xlabel("Fitness — Flat Terrain", fontsize=11)
-    ax.set_ylabel("Fitness — Ice Terrain", fontsize=11)
+    ax.set_xlabel("Fitness — Obj 1", fontsize=11)
+    ax.set_ylabel("Fitness — Obj 2", fontsize=11)
     info = [f"{n_fronts} front{'s' if n_fronts > 1 else ''}"]
     if num_generations is not None:
         info.insert(0, f"gen {num_generations}")
@@ -469,20 +509,40 @@ def plot_pareto_fronts(fitness, output_dir, num_generations=None, population_siz
 
 
 def plot_pareto_fronts_from_checkpoint(checkpoint_dir: str):
-    """Load fitness data from a checkpoint directory or results directory and plot Pareto fronts."""
+    """Plot Pareto fronts from the raw evaluated generation, not just survivors."""
+    fitness, generation_idx, source_path = _load_raw_generation_fitness(checkpoint_dir)
+    if fitness is None:
+        print(
+            f"Could not find raw 2-objective fitness data in '{checkpoint_dir}' or its parent results directory."
+        )
+        return
+
+    checkpoint_dir = os.path.abspath(checkpoint_dir)
+    save_dir = checkpoint_dir
+    print(f"Plotting Pareto fronts from raw evaluated generation: {source_path}")
+    plot_pareto_fronts(
+        fitness,
+        save_dir,
+        num_generations=generation_idx,
+        population_size=fitness.shape[0],
+    )
+
+
+def _load_raw_generation_fitness(checkpoint_dir: str):
+    """Load raw evaluated-generation fitness from full_f.npy when available."""
     checkpoint_dir = os.path.abspath(checkpoint_dir)
     checkpoint_name = os.path.basename(checkpoint_dir)
     checkpoint_parent = os.path.dirname(checkpoint_dir)
+    generation_idx = int(checkpoint_name) + 1 if checkpoint_name.isdigit() else None
 
-    candidates = [
-        os.path.join(checkpoint_dir, "f.npy"),
-        os.path.join(checkpoint_dir, "full_f.npy"),
-    ]
+    candidates = []
     if checkpoint_name.isdigit():
         candidates.append(os.path.join(checkpoint_parent, "full_f.npy"))
+    candidates.extend([
+        os.path.join(checkpoint_dir, "full_f.npy"),
+        os.path.join(checkpoint_dir, "f.npy"),
+    ])
 
-    fitness = None
-    generation_idx = int(checkpoint_name) + 1 if checkpoint_name.isdigit() else None
     for fitness_path in candidates:
         if not os.path.exists(fitness_path):
             continue
@@ -492,31 +552,334 @@ def plot_pareto_fronts_from_checkpoint(checkpoint_dir: str):
             print(f"Could not load fitness data from {fitness_path}: {e}")
             continue
 
-        if loaded.ndim == 3 and generation_idx is not None and os.path.basename(fitness_path) == "full_f.npy":
-            if 0 < generation_idx <= loaded.shape[0]:
+        if loaded.ndim == 3:
+            if generation_idx is not None and 0 < generation_idx <= loaded.shape[0]:
                 fitness = loaded[generation_idx - 1]
             else:
                 fitness = loaded[-1]
         else:
-            fitness = loaded[-1] if loaded.ndim == 3 else loaded
+            fitness = loaded
 
         if fitness.ndim == 2 and fitness.shape[1] == 2:
-            break
-        fitness = None
+            return fitness, generation_idx, fitness_path
 
-    if fitness is None:
-        print(
-            f"Could not find 2-objective fitness data in '{checkpoint_dir}' or its parent results directory."
-        )
-        return
+    return None, generation_idx, None
 
-    save_dir = checkpoint_dir
-    plot_pareto_fronts(
-        fitness,
-        save_dir,
-        num_generations=generation_idx,
-        population_size=fitness.shape[0],
+
+def _load_survivor_population_and_fitness(checkpoint_dir: str):
+    """Load the survivor population stored in a checkpoint for evaluation."""
+    checkpoint_dir = os.path.abspath(checkpoint_dir)
+    last_gen = get_last_checkpoint_dir(checkpoint_dir)
+    survivor_dir = last_gen if last_gen else checkpoint_dir
+
+    population_path = os.path.join(survivor_dir, "x.npy")
+    fitness_path = os.path.join(survivor_dir, "f.npy")
+
+    population = None
+    fitness = None
+    if os.path.isfile(population_path):
+        population = np.load(population_path, allow_pickle=True)
+    if os.path.isfile(fitness_path):
+        fitness = np.load(fitness_path, allow_pickle=True)
+    return population, fitness, survivor_dir
+
+
+def _normalise_objectives(fitness):
+    """Normalise objectives to [0, 1] for balanced-selection heuristics."""
+    fitness = np.asarray(fitness, dtype=float)
+    mins = np.min(fitness, axis=0)
+    spans = np.max(fitness, axis=0) - mins
+    spans = np.where(spans > 0, spans, 1.0)
+    return (fitness - mins) / spans
+
+
+def _select_representative_from_sorted(pareto_indices, pareto_fitness, objective_idx, exclude=()):
+    """Pick the best candidate for one objective, preferring unseen indices."""
+    exclude = set(exclude)
+    ranked_local = np.argsort(pareto_fitness[:, objective_idx])[::-1]
+    for local_idx in ranked_local:
+        global_idx = int(pareto_indices[local_idx])
+        if global_idx not in exclude or len(ranked_local) <= len(exclude):
+            return int(local_idx), global_idx
+
+    local_idx = int(ranked_local[0])
+    return local_idx, int(pareto_indices[local_idx])
+
+
+def _select_generalist_from_pareto(pareto_indices, pareto_fitness, exclude=()):
+    """Select a balanced Pareto-front solution for the generalist role."""
+    exclude = set(exclude)
+    normalized = _normalise_objectives(pareto_fitness)
+    balance_score = np.minimum(normalized[:, 0], normalized[:, 1])
+    overall_score = np.sum(normalized, axis=1)
+    ranked_local = np.argsort(balance_score + 1e-6 * overall_score)[::-1]
+
+    for local_idx in ranked_local:
+        global_idx = int(pareto_indices[local_idx])
+        if global_idx not in exclude or len(ranked_local) <= len(exclude):
+            return int(local_idx), global_idx
+
+    local_idx = int(ranked_local[0])
+    return local_idx, int(pareto_indices[local_idx])
+
+
+def select_specialists_and_generalist(population, fitness):
+    """Select two specialists and one balanced generalist from the first Pareto front."""
+    population = np.asarray(population)
+    fitness = np.asarray(fitness, dtype=float)
+    if population.ndim != 2:
+        raise ValueError("Population must have shape (n_pop, n_params).")
+    if fitness.ndim != 2 or fitness.shape[0] != population.shape[0] or fitness.shape[1] < 2:
+        raise ValueError("Fitness must have shape (n_pop, 2) aligned with the population.")
+
+    dummy_nsga = NSGAII(population_size=fitness.shape[0], n_opt_params=1)
+    fronts, population_rank = dummy_nsga.fast_nondominated_sort(fitness)
+    pareto_indices = np.asarray(fronts[0], dtype=int)
+    pareto_fitness = fitness[pareto_indices]
+
+    spec1_local, spec1_idx = _select_representative_from_sorted(
+        pareto_indices,
+        pareto_fitness,
+        objective_idx=0,
     )
+    spec2_local, spec2_idx = _select_representative_from_sorted(
+        pareto_indices,
+        pareto_fitness,
+        objective_idx=1,
+        exclude={spec1_idx},
+    )
+    gen_local, gen_idx = _select_generalist_from_pareto(
+        pareto_indices,
+        pareto_fitness,
+        exclude={spec1_idx, spec2_idx},
+    )
+
+    selected = {
+        "specialist_obj1": {
+            "index": spec1_idx,
+            "fitness": fitness[spec1_idx],
+            "genotype": population[spec1_idx],
+            "pareto_local_index": spec1_local,
+        },
+        "specialist_obj2": {
+            "index": spec2_idx,
+            "fitness": fitness[spec2_idx],
+            "genotype": population[spec2_idx],
+            "pareto_local_index": spec2_local,
+        },
+        "generalist": {
+            "index": gen_idx,
+            "fitness": fitness[gen_idx],
+            "genotype": population[gen_idx],
+            "pareto_local_index": gen_local,
+        },
+    }
+    return {
+        "selected": selected,
+        "pareto_indices": pareto_indices,
+        "population_rank": np.asarray(population_rank, dtype=int),
+    }
+
+
+def _extract_morphology_params(world, genotype):
+    """Decode the last body genes to physical leg lengths in meters."""
+    genotype = np.asarray(genotype, dtype=float)
+    if genotype.size < world.n_body_params:
+        raise ValueError("Genotype is shorter than the number of body parameters.")
+
+    body_genes = genotype[-world.n_body_params:]
+    body_params = (body_genes + 1.0) / 4.0 + 0.1
+    return {name: float(value) for name, value in zip(BODY_PARAM_NAMES, body_params)}
+
+
+def _compute_morphology_metrics(body_params):
+    """Compute compact morphology summaries for specialist/generalist comparison."""
+    upper_lengths = np.array([
+        body_params["front_left_leg"],
+        body_params["front_right_leg"],
+        body_params["back_left_leg"],
+        body_params["back_right_leg"],
+    ])
+    lower_lengths = np.array([
+        body_params["front_left_ankle"],
+        body_params["front_right_ankle"],
+        body_params["back_left_ankle"],
+        body_params["back_right_ankle"],
+    ])
+    front_total = np.array([
+        body_params["front_left_leg"] + body_params["front_left_ankle"],
+        body_params["front_right_leg"] + body_params["front_right_ankle"],
+    ])
+    hind_total = np.array([
+        body_params["back_left_leg"] + body_params["back_left_ankle"],
+        body_params["back_right_leg"] + body_params["back_right_ankle"],
+    ])
+    limb_total = np.array([*front_total, *hind_total])
+
+    return {
+        "avg_upper": float(np.mean(upper_lengths)),
+        "avg_lower": float(np.mean(lower_lengths)),
+        "avg_front_total": float(np.mean(front_total)),
+        "avg_hind_total": float(np.mean(hind_total)),
+        "avg_total_limb": float(np.mean(limb_total)),
+    }
+
+
+def write_morphology_comparison(world, selected_individuals, output_dir):
+    """Write morphology table and plot for the selected Pareto-front representatives."""
+    os.makedirs(output_dir, exist_ok=True)
+    rows = []
+    for label, meta in selected_individuals.items():
+        body_params = _extract_morphology_params(world, meta["genotype"])
+        metrics = _compute_morphology_metrics(body_params)
+        row = {
+            "individual": label,
+            "display_name": INDIVIDUAL_DISPLAY_NAMES.get(label, label),
+            "population_index": meta.get("index"),
+            "objective_1": float(meta["fitness"][0]) if meta.get("fitness") is not None else np.nan,
+            "objective_2": float(meta["fitness"][1]) if meta.get("fitness") is not None else np.nan,
+        }
+        row.update(body_params)
+        row.update(metrics)
+        rows.append(row)
+
+    csv_path = os.path.join(output_dir, "morphology_comparison.csv")
+    fieldnames = [
+        "individual",
+        "display_name",
+        "population_index",
+        "objective_1",
+        "objective_2",
+        *BODY_PARAM_NAMES,
+        *MORPHOLOGY_METRIC_NAMES,
+    ]
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    fig, axes = plt.subplots(2, 1, figsize=(14, 10))
+    x_body = np.arange(len(BODY_PARAM_NAMES))
+    x_metrics = np.arange(len(MORPHOLOGY_METRIC_NAMES))
+    width = 0.24
+    offsets = np.linspace(-width, width, len(rows))
+    colors = ["#B51F1F", "#007480", "#4B0082"]
+
+    for row_idx, row in enumerate(rows):
+        body_vals = [row[name] for name in BODY_PARAM_NAMES]
+        metric_vals = [row[name] for name in MORPHOLOGY_METRIC_NAMES]
+        label = row["display_name"]
+        color = colors[row_idx % len(colors)]
+        axes[0].bar(x_body + offsets[row_idx], body_vals, width=width, label=label, color=color)
+        axes[1].bar(x_metrics + offsets[row_idx], metric_vals, width=width, label=label, color=color)
+
+    axes[0].set_xticks(x_body)
+    axes[0].set_xticklabels(
+        [BODY_PARAM_LABELS[name] for name in BODY_PARAM_NAMES],
+        rotation=30,
+        ha="right",
+    )
+    axes[0].set_ylabel("Length [m]")
+    axes[0].set_title("Morphology Parameters")
+    axes[0].grid(True, axis="y", alpha=0.2)
+    axes[0].legend()
+
+    axes[1].set_xticks(x_metrics)
+    axes[1].set_xticklabels(
+        [MORPHOLOGY_METRIC_LABELS[name] for name in MORPHOLOGY_METRIC_NAMES],
+        rotation=15,
+        ha="right",
+    )
+    axes[1].set_ylabel("Length [m]")
+    axes[1].set_title("Derived Morphology Summaries")
+    axes[1].grid(True, axis="y", alpha=0.2)
+    axes[1].legend()
+
+    fig.suptitle("Specialist vs. Generalist Morphology Comparison", fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    plot_path = os.path.join(output_dir, "morphology_comparison.pdf")
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+    print(f"Morphology table saved to: {csv_path}")
+    print(f"Morphology plot saved to: {plot_path}")
+    return rows, csv_path, plot_path
+
+
+def plot_selected_pareto_individuals(fitness, pareto_indices, selected_individuals, output_dir):
+    """Highlight the chosen specialists and generalist on the Pareto front."""
+    os.makedirs(output_dir, exist_ok=True)
+    fitness = np.asarray(fitness, dtype=float)
+    pareto_indices = np.asarray(pareto_indices, dtype=int)
+    pareto_fitness = fitness[pareto_indices]
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.scatter(
+        fitness[:, 0],
+        fitness[:, 1],
+        color="lightgray",
+        s=28,
+        alpha=0.6,
+        label="Population",
+        zorder=1,
+    )
+
+    pareto_order = np.argsort(pareto_fitness[:, 0])
+    pareto_sorted = pareto_fitness[pareto_order]
+    ax.plot(
+        pareto_sorted[:, 0],
+        pareto_sorted[:, 1],
+        color="#007480",
+        linewidth=1.5,
+        alpha=0.8,
+        label="Pareto front",
+        zorder=2,
+    )
+    ax.scatter(
+        pareto_fitness[:, 0],
+        pareto_fitness[:, 1],
+        color="#007480",
+        s=50,
+        edgecolors="white",
+        linewidths=0.5,
+        zorder=3,
+    )
+
+    markers = {
+        "specialist_obj1": "^",
+        "specialist_obj2": "s",
+        "generalist": "D",
+    }
+    colors = {
+        "specialist_obj1": "#B51F1F",
+        "specialist_obj2": "#D98C00",
+        "generalist": "#4B0082",
+    }
+    for label, meta in selected_individuals.items():
+        fit = np.asarray(meta["fitness"], dtype=float)
+        ax.scatter(
+            fit[0],
+            fit[1],
+            s=140,
+            marker=markers.get(label, "o"),
+            color=colors.get(label, "#111111"),
+            edgecolors="black",
+            linewidths=0.8,
+            label=INDIVIDUAL_DISPLAY_NAMES.get(label, label),
+            zorder=4,
+        )
+
+    ax.set_xlabel("Objective 1: reward_forward + healthy_reward")
+    ax.set_ylabel("Objective 2: -ctrl_cost")
+    ax.set_title("Selected Specialists and Generalist on the Pareto Front")
+    ax.grid(True, alpha=0.2)
+    ax.legend(framealpha=0.95)
+    fig.tight_layout()
+
+    out_path = os.path.join(output_dir, "pareto_selection.pdf")
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Pareto selection plot saved to: {out_path}")
+    return out_path
 
 
 
@@ -524,67 +887,69 @@ def evaluate_checkpoint(
     checkpoint_dir: str,
     output_dir: str = "evaluation_output",
     n_episodes: int = 256,          # set to 256 for submission; lower for testing
+    world: AntWorld | None = None,
+    max_episode_steps: int = 1000,
+    seed: int = 0,
+    record_videos: bool = True,
 ):
     """Evaluate a Challenge-3 NSGA-II checkpoint on the hilly terrain.
 
-    Identifies two specialists (best per objective) and a generalist (best
-    combined score) from the last checkpoint's population, evaluates each for
-    n_episodes, records three videos, and writes a score file.
-
-    The controller type and genotype size are taken from the AntWorld default
-    (whatever the student configured), so no hardcoded assumptions are made.
-    Objectives: [reward_forward + healthy_reward,  -ctrl_cost].
+    Identifies two specialists and one balanced generalist from the first
+    Pareto front of the survivor population stored in the last checkpoint,
+    evaluates each for n_episodes, records three videos, and writes
+    comparison files.
 
     Args:
         checkpoint_dir: Path to your NSGA-II checkpoint folder.
         output_dir:     Where to save the score file and videos.
         n_episodes:     Episodes per individual (256 for submission).
+        world:          Optional preconfigured AntWorld (useful for MLP runs).
+        max_episode_steps: Episode horizon. Keep 1000 for submission artifacts.
+        seed:           Base seed for reproducible evaluation.
+        record_videos:  Whether to write the three rendered videos.
     """
-    max_episode_steps: int = 1000  # DO NOT CHANGE!
-    seed: int = 0                  # DO NOT CHANGE!
-
-    # --- Locate checkpoint files ---
-    last_gen = get_last_checkpoint_dir(checkpoint_dir)
-
-    def _try_load(filename):
-        for d in ([last_gen] if last_gen else []) + [checkpoint_dir]:
-            p = os.path.join(d, filename)
-            if os.path.isfile(p):
-                return np.load(p, allow_pickle=True)
-        return None
-
-    x_best = _try_load("x_best.npy")
+    # --- Locate survivor checkpoint files ---
+    population, fitness, survivor_dir = _load_survivor_population_and_fitness(checkpoint_dir)
+    x_best_path = os.path.join(survivor_dir, "x_best.npy")
+    if not os.path.isfile(x_best_path):
+        x_best_path = os.path.join(os.path.abspath(checkpoint_dir), "x_best.npy")
+    x_best = np.load(x_best_path, allow_pickle=True) if os.path.isfile(x_best_path) else None
     if x_best is None:
         print(f"ERROR: Could not find x_best.npy in '{checkpoint_dir}'.")
         return None
 
-    population = _try_load("x.npy")
-    fitness    = _try_load("f.npy")
     print(f"Loaded x_best  (shape: {x_best.shape})")
+    print(f"Using survivor population for evaluation: {survivor_dir}")
 
     # --- Identify specialist and generalist genotypes ---
     if (population is not None and fitness is not None
             and fitness.ndim == 2 and fitness.shape[1] >= 2):
-        spec1_idx = int(np.argmax(fitness[:, 0]))           # best forward+healthy
-        spec2_idx = int(np.argmax(fitness[:, 1]))           # best efficiency
-        gen_idx   = int(np.argmax(np.sum(fitness, axis=1))) # pareto-knee proxy
-        spec1_g, spec2_g, gen_g = population[spec1_idx], population[spec2_idx], population[gen_idx]
-        print(f"Specialist obj1 (forward): idx={spec1_idx}  f={fitness[spec1_idx]}")
-        print(f"Specialist obj2 (effic.) : idx={spec2_idx}  f={fitness[spec2_idx]}")
-        print(f"Generalist (best sum)    : idx={gen_idx}    f={fitness[gen_idx]}")
+        selection = select_specialists_and_generalist(population, fitness)
+        for label, meta in selection["selected"].items():
+            print(
+                f"{INDIVIDUAL_DISPLAY_NAMES.get(label, label):<18s}: "
+                f"idx={meta['index']}  f={meta['fitness']}"
+            )
     else:
         print("Warning: population/fitness not found — using x_best for all three roles.")
-        spec1_g = spec2_g = gen_g = x_best
+        selection = {
+            "selected": {
+                "specialist_obj1": {"index": None, "fitness": None, "genotype": x_best},
+                "specialist_obj2": {"index": None, "fitness": None, "genotype": x_best},
+                "generalist": {"index": None, "fitness": None, "genotype": x_best},
+            },
+            "pareto_indices": None,
+            "population_rank": None,
+        }
 
-    # --- AntWorld uses whatever controller the student configured ---
-    world = AntWorld()
+    if world is None:
+        world = AntWorld()
     controller_name = type(world.controller).__name__
     print(f"Controller: {controller_name}  |  params={world.controller.n_params}  |  genotype size={world.n_params}\n")
 
     individuals = {
-        "specialist_obj1": spec1_g,
-        "specialist_obj2": spec2_g,
-        "generalist":      gen_g,
+        label: meta["genotype"]
+        for label, meta in selection["selected"].items()
     }
 
     # --- Run episodes ---
@@ -610,9 +975,25 @@ def evaluate_checkpoint(
         "specialist_obj2": "specialist_efficiency",
         "generalist":      "generalist",
     }
-    for label, genotype in individuals.items():
-        vpath = os.path.join(output_dir, f"evaluation_{video_names[label]}.mp4")
-        _record_video_hill(world, genotype, max_episode_steps, seed, vpath)
+    if record_videos:
+        for label, genotype in individuals.items():
+            vpath = os.path.join(output_dir, f"evaluation_{video_names[label]}.mp4")
+            _record_video_hill(world, genotype, max_episode_steps, seed, vpath)
+
+    morphology_rows, morphology_csv_path, morphology_plot_path = write_morphology_comparison(
+        world,
+        selection["selected"],
+        output_dir,
+    )
+
+    pareto_selection_path = None
+    if fitness is not None and selection["pareto_indices"] is not None:
+        pareto_selection_path = plot_selected_pareto_individuals(
+            fitness,
+            selection["pareto_indices"],
+            selection["selected"],
+            output_dir,
+        )
 
     # --- Score file ---
     score_path = os.path.join(output_dir, "evaluation_score.txt")
@@ -623,8 +1004,14 @@ def evaluate_checkpoint(
         f.write(f"Controller      : {controller_name} ({world.controller.n_params} params)\n")
         f.write(f"Genotype size   : {world.n_params}  (weights={world.controller.n_params}, body={world.n_body_params})\n")
         f.write(f"Checkpoint      : {checkpoint_dir}\n")
+        f.write(f"Selection basis : survivor population ({survivor_dir})\n")
         f.write(f"Episodes/indiv. : {n_episodes}\n")
-        f.write(f"Objectives      : [reward_forward+healthy_reward, -ctrl_cost]\n\n")
+        f.write(f"Objectives      : [reward_forward+healthy_reward, -ctrl_cost]\n")
+        f.write(f"Morphology CSV  : {morphology_csv_path}\n")
+        f.write(f"Morphology plot : {morphology_plot_path}\n")
+        if pareto_selection_path is not None:
+            f.write(f"Pareto selection: {pareto_selection_path}\n")
+        f.write("\n")
 
         f.write("=" * 72 + "\n")
         f.write("SUMMARY\n")
@@ -638,14 +1025,40 @@ def evaluate_checkpoint(
                     f"{r['reward']['best']:9.2f} {r['obj1']['mean']:10.2f} {r['obj2']['mean']:10.2f}\n")
         f.write("\n")
 
-        for label in individuals:
-            r = results[label]
-            f.write("-" * 50 + "\n")
-            f.write(f"{label.upper()} — Per-episode rewards\n")
-            f.write("-" * 50 + "\n")
-            for i, rew in enumerate(r["reward"]["values"]):
-                f.write(f"  Episode {i + 1:3d}: {rew:10.2f}\n")
-            f.write("\n")
+        f.write("=" * 72 + "\n")
+        f.write("SELECTION ON THE FIRST PARETO FRONT\n")
+        f.write("=" * 72 + "\n")
+        f.write(f"{'Individual':<22s} {'Pop.Idx':>7s} {'Rank':>6s} {'Obj1':>10s} {'Obj2':>10s}\n")
+        f.write("-" * 72 + "\n")
+        for label, meta in selection["selected"].items():
+            population_idx = meta.get("index")
+            if population_idx is None:
+                idx_str = "-"
+                rank_str = "-"
+                obj1_value = np.nan
+                obj2_value = np.nan
+            else:
+                idx_str = str(population_idx)
+                rank_str = str(int(selection["population_rank"][population_idx]) + 1)
+                obj1_value = float(meta["fitness"][0])
+                obj2_value = float(meta["fitness"][1])
+            f.write(
+                f"{label:<22s} {idx_str:>7s} {rank_str:>6s} "
+                f"{obj1_value:10.2f} {obj2_value:10.2f}\n"
+            )
+        f.write("\n")
+
+        f.write("=" * 72 + "\n")
+        f.write("MORPHOLOGY SUMMARY [m]\n")
+        f.write("=" * 72 + "\n")
+        f.write(f"{'Individual':<22s} {'Avg.Up':>8s} {'Avg.Low':>8s} {'Front':>8s} {'Hind':>8s} {'Total':>8s}\n")
+        f.write("-" * 72 + "\n")
+        for row in morphology_rows:
+            f.write(
+                f"{row['individual']:<22s} {row['avg_upper']:8.3f} {row['avg_lower']:8.3f} "
+                f"{row['avg_front_total']:8.3f} {row['avg_hind_total']:8.3f} {row['avg_total_limb']:8.3f}\n"
+            )
+        f.write("\n")
 
     print(f"\nScore saved to: {score_path}")
     print("=" * 60)
@@ -707,35 +1120,41 @@ def main():
     # world.update_robot_xml(genotype)
     # world.visualise_individual(genotype)
 
-    #%% Evolve open-loop mlp
-    # world = AntWorld()
-    # state_space = 27
-    # action_space = 8 # Change controller
-    # world.controller = NeuralNetworkController_Custom(input_size=state_space,
-    #                                            output_size=action_space,
-    #                                            hidden_size=16)
-    # world.n_weights = world.controller.n_params
-    # world.n_params = world.n_weights + world.n_body_params
-    # n_parameters = world.n_params
-    # population_size = 100
-    # mutation_sigma = 0.3
-    # num_generations = 1200
-    # bounds = (-1, 1)
+    # %% Evolve open-loop mlp
+    world = AntWorld()
+    state_space = 27
+    action_space = 8 # Change controller
+    world.controller = NeuralNetworkController_Custom(input_size=state_space,
+                                               output_size=action_space,
+                                               hidden_size=16)
+    world.n_weights = world.controller.n_params
+    world.n_params = world.n_weights + world.n_body_params
+    n_parameters = world.n_params
+    population_size = 100
+    mutation_sigma = 0.3
+    num_generations = 1200
+    bounds = (-1, 1)
 
-    # results_dir = join(ROOT_DIR, "results", ENV_NAME, "single")
-    # ea_single = EvoAlgAPI(n_parameters, population_size, num_generations, mutation_sigma, bounds, results_dir)
+    results_dir = join(ROOT_DIR, "results", ENV_NAME, "single")
+    ea_single = EvoAlgAPI(n_parameters, population_size, num_generations, mutation_sigma, bounds, results_dir)
 
     # run_EA_single(ea_single, world, save_every=50)
     # plot_fitness(ea_single.full_f, results_dir)
 
-    # #%% visualise
-    # checkpoint = get_last_checkpoint_dir(results_dir)
-    # best_individual = np.load(join(results_dir, checkpoint, "x_best.npy"))
-    # world.update_robot_xml(best_individual)
-    # env = world.create_env(max_episode_steps=-1)
-    # video_name = get_distinct_filename(join(results_dir, "best.mp4"))
-    # print(f"Finished ES run, generating video [{video_name}]...")
-    # world.generate_best_individual_video(env, video_name=video_name, n_steps=500)
+    #%% visualise
+    checkpoint = get_last_checkpoint_dir(results_dir)
+    best_individual = np.load(join(results_dir, checkpoint, "x_best.npy"))
+    world.update_robot_xml(best_individual)
+    env = world.create_env(max_episode_steps=-1)
+    video_name = get_distinct_filename(join(results_dir, "best.mp4"))
+    print(f"Finished ES run, generating video [{video_name}]...")
+    world.generate_best_individual_video(env, video_name=video_name, n_steps=500)
+    evaluate_checkpoint(
+        checkpoint_dir=results_dir,
+        output_dir=join(results_dir, "evaluation"),
+        n_episodes=256,
+        world=world,
+    )
 
 
     #%% Optimise multi-objective
@@ -751,6 +1170,7 @@ def main():
     world.n_weights = world.controller.n_params
     world.n_params = world.n_weights + world.n_body_params
     n_parameters = world.n_params
+    world.update_robot_xml(genotype)
     print("Number of parameters:", n_parameters)
     print("Number of weights:", world.n_weights)
     population_size = 100
@@ -759,11 +1179,11 @@ def main():
     opts["min"] = -1
     opts["max"] = 1
     opts["num_parents"] = population_size//2
-    opts["num_generations"] = 400
-    opts["mutation_prob"] = 0.2
-    opts["crossover_prob"] = 0.7
+    opts["num_generations"] = 50
+    opts["mutation_prob"] = 0.3
+    opts["crossover_prob"] = 0.8
 
-    results_dir = join(ROOT_DIR, "results", ENV_NAME, "multi")
+    results_dir = join(ROOT_DIR, "results", ENV_NAME, "multi-v5")
     ea_multi_obj = NSGAII(population_size,
                           n_parameters,
                           opts["num_parents"],
@@ -771,25 +1191,36 @@ def main():
                           (opts["min"], opts["max"]),
                           opts["mutation_prob"],
                           opts["crossover_prob"],
+                          loaded_weights=prev_best,
                           )
     ea_multi_obj.directory_name = results_dir
-    run_EA_multi(ea_multi_obj, world, save_every=50)
-    plot_fitness(ea_multi_obj.full_f, results_dir)
-    plot_pareto_fronts(
-        ea_multi_obj.full_f,
-        results_dir,
-        num_generations=ea_multi_obj.n_gen,
-        population_size=population_size,
-    )
+    # run_EA_multi(ea_multi_obj, world, save_every=20)
+    # plot_fitness(ea_multi_obj.full_f, results_dir)
+    # plot_pareto_fronts(
+    #     ea_multi_obj.full_f,
+    #     results_dir,
+    #     num_generations=ea_multi_obj.n_gen,
+    #     population_size=population_size,
+    # )
 
     #%% visualise
     checkpoint = get_last_checkpoint_dir(results_dir)
-    best_individual = np.load(join(results_dir, checkpoint, "x_best.npy"), allow_pickle=True)
+    best_individual = np.load(join(checkpoint, "x_best.npy"), allow_pickle=True)
     world.update_robot_xml(best_individual)
     env = world.create_env(max_episode_steps=-1)
     video_name = get_distinct_filename(join(results_dir, "best.mp4"))
     print(f"Finished NSGAII run, generating video [{video_name}]...")
+    plot_pareto_fronts_from_checkpoint(checkpoint)
     world.generate_best_individual_video(env, video_name=video_name, n_steps=500)
+
+    analysis_dir = join(checkpoint, "submission_assets")
+    print(f"Generating specialist/generalist analysis in [{analysis_dir}]...")
+    evaluate_checkpoint(
+        checkpoint_dir=results_dir,
+        output_dir=analysis_dir,
+        n_episodes=256,
+        world=world,
+    )
 
 
 if __name__ == "__main__":
