@@ -528,12 +528,12 @@ def evaluate_checkpoint(
 
 def run_multi_task_evolution(
     num_generations: int = 100,
-    population_size: int = 100,
+    population_size: int = 250,
     n_parents:       int = 50,
     n_repeats:       int = 4,
     n_steps:         int = 500,
     mutation_prob:   float = 0.3,
-    crossover_prob:  float = 0.5,
+    crossover_prob:  float = 0.9,
     bounds:          tuple = (-1, 1),
     ckpt_interval:   int = 10,
     results_dir:     str = None,
