@@ -31,12 +31,12 @@ import evorob.world                         # registers EvalEnv-v0
 from evorob.algorithms.nsga_sol import NSGAII
 from evorob.utils.filesys import get_last_checkpoint_dir, get_project_root
 from evorob.world.base import World
-from evorob.world.robot.controllers.mlp_sol import NeuralNetworkController
 from evorob.world.robot.morphology.ant_custom_robot import AntRobot
 
 ROOT_DIR = get_project_root()
 _ASSETS  = join(ROOT_DIR, "evorob", "world", "robot", "assets")
 MAX_EPISODE_STEPS = 1000  # fixed for leaderboard — do not change
+DEFAULT_MLP_WARM_START = join(ROOT_DIR, "results", "AntHill-v0", "single")
 
 
 # ---------------------------------------------------------------------------
@@ -55,11 +55,11 @@ class FinalWorld(World):
         # Choose your controller — swap for your own MLP, SO2Controller, Hebbian, or custom.
         # Whatever you choose determines self.n_weights (controller parameter count).
         #
-        # from evorob.world.robot.controllers.mlp import NeuralNetworkController  # your impl
+        from evorob.world.robot.controllers.mlp import NeuralNetworkController  # your impl
         # from evorob.world.robot.controllers.so2 import SO2Controller
         # self.controller = SO2Controller(input_size=27, output_size=8, hidden_size=8)
         self.controller = NeuralNetworkController(
-            input_size=27, output_size=8, hidden_size=8
+            input_size=27, output_size=8, hidden_size=16
         )
 
         self.n_weights     = self.controller.n_params
@@ -107,12 +107,12 @@ class FinalWorld(World):
         """Decode genotype into controller weights and body parameters.
 
         Splits genotype into:
-          genotype[:n_weights]  → controller (scaled by 0.1 before loading)
+          genotype[:n_weights]  → controller
           genotype[n_weights:]  → 8 leg-segment lengths via (g+1)/4 + 0.1
 
         Returns (points, connectivity_mat) for AntRobot construction.
         """
-        control_params = genotype[:self.n_weights] * 0.1
+        control_params = genotype[:self.n_weights]
         body_params    = (genotype[self.n_weights:] + 1) / 4 + 0.1
         self.controller.geno2pheno(control_params)
 
@@ -283,6 +283,66 @@ class FinalWorld(World):
             self._eval_ice(n_repeats, n_steps),
             self._eval_hill(n_repeats, n_steps),
         ])
+
+# ---------------------------------------------------------------------------
+# Warm-start helpers
+# ---------------------------------------------------------------------------
+
+def _numeric_parent_key(path: str) -> tuple[int, str]:
+    """Sort checkpoint files by numeric parent directory, newest first."""
+    parent = os.path.basename(os.path.dirname(path.rstrip("/")))
+    return (int(parent) if parent.isdigit() else -1, path)
+
+
+def _load_checkpoint_genotype(source: str) -> np.ndarray:
+    """Load x_best.npy from a directory, a .npy file, or a zipped results folder."""
+    if source is None:
+        raise ValueError("No warm-start source provided.")
+
+    source = os.path.expanduser(source)
+
+    if os.path.isfile(source) and source.endswith(".npy"):
+        return np.load(source, allow_pickle=True)
+
+    if os.path.isdir(source):
+        last_gen = get_last_checkpoint_dir(source)
+        search_dirs = ([last_gen] if last_gen else []) + [source]
+        for directory in search_dirs:
+            path = join(directory, "x_best.npy")
+            if os.path.isfile(path):
+                return np.load(path, allow_pickle=True)
+        raise FileNotFoundError(f"x_best.npy not found in warm-start directory: {source}")
+
+
+def _warm_start_population_with_mlp(
+    population: np.ndarray,
+    mlp_params: np.ndarray,
+    bounds: tuple[float, float],
+    noise_scale: float,
+) -> np.ndarray:
+    """Set generation-0 MLP genes from a pretrained controller.
+
+    The first individual receives the pretrained MLP exactly.  The remaining
+    individuals receive small bounded perturbations so NSGA-II can still evolve
+    the controller slice (differential mutation needs initial diversity).
+    Body parameters stay as sampled by the EA.
+    """
+    warm_population = population.copy()
+    n_weights = mlp_params.size
+    warm_population[0, :n_weights] = mlp_params
+
+    if len(warm_population) > 1:
+        noise = np.random.normal(
+            loc=0.0,
+            scale=noise_scale,
+            size=(len(warm_population) - 1, n_weights),
+        )
+        warm_population[1:, :n_weights] = mlp_params + noise
+
+    warm_population[:, :n_weights] = np.clip(
+        warm_population[:, :n_weights], bounds[0], bounds[1]
+    )
+    return warm_population
 
 
 # ---------------------------------------------------------------------------
@@ -478,12 +538,29 @@ def run_multi_task_evolution(
     ckpt_interval:   int = 10,
     results_dir:     str = None,
     random_seed:     int = 42,
+    mlp_warm_start_source: str | None = DEFAULT_MLP_WARM_START,
+    mlp_warm_start_noise: float = 0.05,
 ) -> None:
     np.random.seed(random_seed)
 
     world = FinalWorld()
     print(f"Genotype : {world.n_params} params"
           f"  (controller={world.n_weights}, body={world.n_body_params})")
+
+    warm_start_mlp = None
+    if mlp_warm_start_source is not None:
+        warm_start_genotype = _load_checkpoint_genotype(mlp_warm_start_source)
+        world.visualise_individual(warm_start_genotype, n_steps=n_steps)
+        warm_start_mlp = np.asarray(warm_start_genotype[:world.n_weights], dtype=float)
+        if warm_start_mlp.size != world.n_weights:
+            raise ValueError(
+                "Warm-start checkpoint does not contain enough MLP parameters: "
+                f"need {world.n_weights}, got {warm_start_genotype.size} total values."
+            )
+        print(
+            "Warm-start MLP: "
+            f"{mlp_warm_start_source} ({world.n_weights} controller params)"
+        )
 
     if results_dir is None:
         results_dir = join(ROOT_DIR, "results", "final_project")
@@ -510,6 +587,10 @@ def run_multi_task_evolution(
 
     for gen in range(num_generations):
         pop = ea.ask()
+        if gen == 0 and warm_start_mlp is not None:
+            pop = _warm_start_population_with_mlp(
+                pop, warm_start_mlp, bounds=bounds, noise_scale=mlp_warm_start_noise
+            )
         fitnesses = np.empty((len(pop), n_obj))
         for idx, genotype in enumerate(pop):
             fitnesses[idx] = world.evaluate_individual(
