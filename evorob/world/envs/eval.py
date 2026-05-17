@@ -100,7 +100,17 @@ class EvalEnv(MujocoEnv, utils.EzPickle):
 
     def _is_terminated(self) -> bool:
         qacc = self.data.qacc
-        return bool(np.any(np.isnan(qacc) | np.isinf(qacc) | (np.abs(qacc) > 1e6)))
+        if np.any(np.isnan(qacc) | np.isinf(qacc) | (np.abs(qacc) > 1e6)):
+            return True
+        if self._torso_upside_down():
+            return True
+        else:
+            self._stuck_count = 0
+        return False
+    
+    def _torso_upside_down(self) -> bool:
+        R = self.data.body(1).xmat.reshape(3, 3)
+        return float(R[2, 2]) < 0.0
 
     def _get_obs(self):
         # Skip root xy (first 2 qpos elements) to keep observations translation-invariant

@@ -36,7 +36,258 @@ from evorob.world.robot.morphology.ant_custom_robot import AntRobot
 ROOT_DIR = get_project_root()
 _ASSETS  = join(ROOT_DIR, "evorob", "world", "robot", "assets")
 MAX_EPISODE_STEPS = 1000  # fixed for leaderboard — do not change
-DEFAULT_MLP_WARM_START = join(ROOT_DIR, "results", "AntHill-v0", "single")
+DEFAULT_MLP_WARM_START = join(ROOT_DIR, "results/final_project_so2_climb/130")
+USE_SO2_CONTROLLER = True
+OBJECTIVE_LABELS = ["Flat", "Ice", "Hill"]
+
+
+def _import_pyplot():
+    """Import matplotlib in headless-safe mode and return pyplot."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    return plt
+
+
+def _coerce_fitness_history(full_f: list | np.ndarray) -> np.ndarray:
+    """Return fitness history as (n_generations, n_pop, n_objectives)."""
+    fitness_array = np.asarray(full_f, dtype=float)
+
+    if fitness_array.ndim == 1:
+        fitness_array = fitness_array[np.newaxis, :, np.newaxis]
+    elif fitness_array.ndim == 2:
+        fitness_array = fitness_array[:, :, np.newaxis]
+    elif fitness_array.ndim != 3:
+        raise ValueError(
+            "Expected fitness history with shape (n_gen, n_pop) or "
+            "(n_gen, n_pop, n_obj)."
+        )
+
+    if fitness_array.shape[0] == 0 or fitness_array.shape[1] == 0:
+        raise ValueError("Cannot plot an empty fitness history.")
+
+    return fitness_array
+
+
+def plot_fitness(full_f: list | np.ndarray, output_dir: str,
+                 objective_labels: list[str] | None = None) -> str:
+    """Save best/mean/std fitness-over-generations plots."""
+    plt = _import_pyplot()
+    fitness_array = _coerce_fitness_history(full_f)
+    generations = np.arange(1, len(fitness_array) + 1)
+    n_objectives = fitness_array.shape[2]
+
+    if objective_labels is None:
+        objective_labels = [f"Objective {i + 1}" for i in range(n_objectives)]
+    objective_labels = objective_labels[:n_objectives]
+
+    plot_labels = objective_labels + ["Sum"]
+    fig, axes = plt.subplots(
+        1, len(plot_labels), figsize=(6.5 * len(plot_labels), 5), squeeze=False
+    )
+    axes = axes.ravel()
+
+    for obj_idx, (ax, label) in enumerate(zip(axes, plot_labels)):
+        if obj_idx < n_objectives:
+            obj_fitness = fitness_array[:, :, obj_idx]
+        else:
+            obj_fitness = fitness_array.sum(axis=2)
+
+        best_per_gen = np.max(obj_fitness, axis=1)
+        mean_per_gen = np.mean(obj_fitness, axis=1)
+        std_per_gen = np.std(obj_fitness, axis=1)
+
+        ax.plot(
+            generations, best_per_gen,
+            label="Best", color="#B51F1F", linewidth=2, linestyle="--",
+        )
+        ax.plot(
+            generations, mean_per_gen,
+            label="Mean", color="#007480", linewidth=2,
+        )
+        ax.fill_between(
+            generations,
+            mean_per_gen - std_per_gen,
+            mean_per_gen + std_per_gen,
+            alpha=0.2, color="#007480", label="Mean +/- 1 std",
+        )
+        ax.set_xlabel("Generation")
+        ax.set_ylabel("Fitness")
+        ax.set_title(label)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle("Fitness over Generations", fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+
+    plot_path = join(output_dir, "fitness_plot.pdf")
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+    print(f"Fitness plot saved to: {plot_path}")
+    return plot_path
+
+
+def plot_pareto_fronts_3d(
+    fitness: list | np.ndarray,
+    output_dir: str,
+    objective_labels: list[str] | None = None,
+    num_generations: int | None = None,
+    population_size: int | None = None,
+) -> str:
+    """Save a 3D Pareto-front visualization for the last evaluated generation."""
+    plt = _import_pyplot()
+    fitness_array = np.asarray(fitness, dtype=float)
+    if fitness_array.ndim == 3:
+        fitness_array = fitness_array[-1]
+
+    if fitness_array.ndim != 2 or fitness_array.shape[1] != 3:
+        raise ValueError(
+            "3D Pareto plotting expects shape (n_pop, 3) or (n_gen, n_pop, 3)."
+        )
+    if len(fitness_array) == 0:
+        raise ValueError("Cannot plot a Pareto front for an empty population.")
+
+    if objective_labels is None:
+        objective_labels = ["Objective 1", "Objective 2", "Objective 3"]
+
+    dummy_nsga = NSGAII(population_size=fitness_array.shape[0], n_opt_params=1)
+    fronts, _ = dummy_nsga.fast_nondominated_sort(fitness_array)
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+
+    top_colors = ["#B51F1F", "#007480", "#4B0082"]
+    n_top = min(3, len(fronts))
+    for i in range(n_top):
+        fi = fitness_array[fronts[i]]
+        ax.scatter(
+            fi[:, 0], fi[:, 1], fi[:, 2],
+            label=f"Front {i + 1}",
+            color=top_colors[i],
+            s=55,
+            edgecolors="white",
+            linewidths=0.5,
+            depthshade=True,
+        )
+
+    if len(fronts) > 3:
+        for i in range(3, len(fronts)):
+            fi = fitness_array[fronts[i]]
+            ax.scatter(
+                fi[:, 0], fi[:, 1], fi[:, 2],
+                label=f"Front {i + 1}" if i <= 5 else None,
+                color="#999999",
+                s=22,
+                alpha=0.35,
+                edgecolors="white",
+                linewidths=0.2,
+                depthshade=True,
+            )
+
+    ax.set_xlabel(objective_labels[0])
+    ax.set_ylabel(objective_labels[1])
+    ax.set_zlabel(objective_labels[2])
+    info = [f"{len(fronts)} front{'s' if len(fronts) > 1 else ''}"]
+    if num_generations is not None:
+        info.insert(0, f"gen {num_generations}")
+    if population_size is not None:
+        info.insert(1 if num_generations else 0, f"pop {population_size}")
+    ax.set_title(f"3D Pareto Fronts  ({',  '.join(info)})")
+    ax.legend(fontsize=9, framealpha=0.9)
+    ax.view_init(elev=22, azim=45)
+    fig.tight_layout()
+
+    plot_path = join(output_dir, "pareto_fronts_3d.pdf")
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+    print(f"3D Pareto front plot saved to: {plot_path}")
+    return plot_path
+
+
+def plot_training_results_from_checkpoint(results_dir: str) -> None:
+    """Regenerate final-project plots from a results directory containing full_f.npy."""
+    full_f_path = join(results_dir, "full_f.npy")
+    if not os.path.isfile(full_f_path):
+        raise FileNotFoundError(f"Could not find fitness history: {full_f_path}")
+    full_f = np.load(full_f_path, allow_pickle=True)
+    plot_fitness(full_f, results_dir, OBJECTIVE_LABELS)
+    plot_pareto_fronts_3d(
+        full_f,
+        results_dir,
+        OBJECTIVE_LABELS,
+        num_generations=len(full_f),
+        population_size=full_f.shape[1] if np.asarray(full_f).ndim >= 2 else None,
+    )
+
+
+def _resume_nsga_from_history(
+    ea: NSGAII,
+    results_dir: str,
+    expected_n_params: int,
+) -> int:
+    """Initialize an NSGA-II instance from saved full_x/full_f history.
+
+    Returns the next generation index to evaluate.
+    """
+    full_x_path = join(results_dir, "full_x.npy")
+    full_f_path = join(results_dir, "full_f.npy")
+    if not os.path.isfile(full_x_path) or not os.path.isfile(full_f_path):
+        raise FileNotFoundError(
+            f"Resume requires both {full_x_path} and {full_f_path}"
+        )
+
+    full_x = np.load(full_x_path, allow_pickle=True)
+    full_f = np.load(full_f_path, allow_pickle=True)
+    if full_x.ndim != 3 or full_f.ndim != 3:
+        raise ValueError(
+            "Resume expects full_x/full_f with shapes "
+            "(n_gen, n_pop, n_params) and (n_gen, n_pop, n_obj)."
+        )
+    if full_x.shape[:2] != full_f.shape[:2]:
+        raise ValueError(
+            f"full_x/full_f population history mismatch: "
+            f"{full_x.shape} vs {full_f.shape}"
+        )
+    if full_x.shape[2] != expected_n_params:
+        raise ValueError(
+            f"Checkpoint genotype size {full_x.shape[2]} does not match "
+            f"current world genotype size {expected_n_params}."
+        )
+    if full_x.shape[1] != ea.n_pop:
+        raise ValueError(
+            f"Checkpoint population size {full_x.shape[1]} does not match "
+            f"requested population_size {ea.n_pop}."
+        )
+
+    last_population = np.asarray(full_x[-1], dtype=float)
+    last_fitness = np.asarray(full_f[-1], dtype=float)
+    parents, parents_fitness = ea.sort_and_select_parents(
+        last_population, last_fitness, ea.n_parents
+    )
+    ea.current_population = parents
+    ea.fitness = parents_fitness
+    ea.full_x = [np.asarray(x, dtype=float) for x in full_x]
+    ea.full_f = [np.asarray(f, dtype=float) for f in full_f]
+    ea.x = last_population
+    ea.f = last_fitness
+    ea.current_gen = len(ea.full_f)
+
+    scalar_history = full_f.sum(axis=2)
+    best_flat_idx = int(np.argmax(scalar_history))
+    best_gen_idx, best_pop_idx = np.unravel_index(best_flat_idx, scalar_history.shape)
+    ea.best_scalar_so_far = float(scalar_history[best_gen_idx, best_pop_idx])
+    ea.x_best_so_far = np.asarray(full_x[best_gen_idx, best_pop_idx], dtype=float)
+    ea.f_best_so_far = np.asarray(full_f[best_gen_idx, best_pop_idx], dtype=float)
+
+    print(
+        "Resuming NSGA-II from "
+        f"{results_dir}: next_gen={ea.current_gen}, "
+        f"history={full_x.shape[0]} generations, "
+        f"best_gen={best_gen_idx}, best_sum={ea.best_scalar_so_far:.2f}"
+    )
+    return ea.current_gen
 
 
 # ---------------------------------------------------------------------------
@@ -55,15 +306,20 @@ class FinalWorld(World):
         # Choose your controller — swap for your own MLP, SO2Controller, Hebbian, or custom.
         # Whatever you choose determines self.n_weights (controller parameter count).
         #
-        from evorob.world.robot.controllers.mlp import NeuralNetworkController  # your impl
-        # from evorob.world.robot.controllers.so2 import SO2Controller
-        # self.controller = SO2Controller(input_size=27, output_size=8, hidden_size=8)
-        self.controller = NeuralNetworkController(
-            input_size=27, output_size=8, hidden_size=16
-        )
+        if USE_SO2_CONTROLLER:
+            from evorob.world.robot.controllers.so2 import SO2Controller
+            self.controller = SO2Controller(input_size=27, output_size=8, hidden_size=8)
+        else:
+            from evorob.world.robot.controllers.mlp import NeuralNetworkController
+            self.controller = NeuralNetworkController(
+                input_size=27, output_size=8, hidden_size=16
+            )
 
         self.n_weights     = self.controller.n_params
-        self.n_body_params = 8          # 4 legs × (upper + lower segment length)
+        # Left-right symmetric morphology:
+        # [front upper, front lower, rear upper, rear lower].
+        # These 4 genes are decoded and mirrored onto the 8 ant leg segments.
+        self.n_body_params = 4
         self.n_params      = self.n_weights + self.n_body_params
 
         # Temporary directory holds AntRobot.xml + one combined world XML per terrain
@@ -108,13 +364,26 @@ class FinalWorld(World):
 
         Splits genotype into:
           genotype[:n_weights]  → controller
-          genotype[n_weights:]  → 8 leg-segment lengths via (g+1)/4 + 0.1
+          genotype[n_weights:]  → 4 symmetric body params via (g+1)/4 + 0.1
 
         Returns (points, connectivity_mat) for AntRobot construction.
         """
         control_params = genotype[:self.n_weights]
-        body_params    = (genotype[self.n_weights:] + 1) / 4 + 0.1
+        symmetric_body_params = (genotype[self.n_weights:] + 1) / 4 + 0.1
         self.controller.geno2pheno(control_params)
+
+        (
+            front_leg,
+            front_ankle,
+            rear_leg,
+            rear_ankle,
+        ) = symmetric_body_params
+        body_params = np.array([
+            front_leg, front_ankle,  # front left
+            front_leg, front_ankle,  # front right
+            rear_leg, rear_ankle,    # back left
+            rear_leg, rear_ankle,    # back right
+        ])
 
         front_left_leg, front_left_ankle, front_right_leg, front_right_ankle, back_left_leg, back_left_ankle, back_right_leg, back_right_ankle, = body_params
 
@@ -527,9 +796,9 @@ def evaluate_checkpoint(
 # ---------------------------------------------------------------------------
 
 def run_multi_task_evolution(
-    num_generations: int = 100,
+    num_generations: int = 70,
     population_size: int = 250,
-    n_parents:       int = 50,
+    n_parents:       int = 250,
     n_repeats:       int = 4,
     n_steps:         int = 500,
     mutation_prob:   float = 0.3,
@@ -538,8 +807,9 @@ def run_multi_task_evolution(
     ckpt_interval:   int = 10,
     results_dir:     str = None,
     random_seed:     int = 42,
-    mlp_warm_start_source: str | None = DEFAULT_MLP_WARM_START,
+    mlp_warm_start_source: str | None = None,
     mlp_warm_start_noise: float = 0.05,
+    resume:          bool = False,
 ) -> None:
     np.random.seed(random_seed)
 
@@ -577,15 +847,25 @@ def run_multi_task_evolution(
     )
 
     n_obj = 3
-    print(f"\nRunning {num_generations} generations  pop={population_size}")
+    start_gen = 0
+    if resume:
+        start_gen = _resume_nsga_from_history(ea, results_dir, world.n_params)
+
+    total_target_generations = start_gen + num_generations
+    print(f"\nRunning {num_generations} additional generations  pop={population_size}")
     print(f"Objectives : [flat, ice, hill]")
     print(f"Checkpoints: {results_dir}\n")
 
     os.makedirs(results_dir, exist_ok=True)
     _best_xml_stage = join(results_dir, "_best_robot.xml")  # staging copy of best robot
-    _best_scalar = -np.inf
+    if ea.x_best_so_far is not None:
+        world.update_robot_xml(ea.x_best_so_far)
+        shutil.copy2(join(world.temp_dir.name, "Robot.xml"), _best_xml_stage)
+        _best_scalar = float(ea.best_scalar_so_far)
+    else:
+        _best_scalar = -np.inf
 
-    for gen in range(num_generations):
+    for gen in range(start_gen, total_target_generations):
         pop = ea.ask()
         if gen == 0 and warm_start_mlp is not None:
             pop = _warm_start_population_with_mlp(
@@ -603,7 +883,7 @@ def run_multi_task_evolution(
                     join(world.temp_dir.name, "Robot.xml"),
                     _best_xml_stage,
                 )
-        save_ckpt = (gen % ckpt_interval == 0)
+        save_ckpt = (gen % ckpt_interval == 0) or (gen == total_target_generations - 1)
         ea.tell(pop, fitnesses, save_checkpoint=save_ckpt)
         if save_ckpt:
             shutil.copy2(
@@ -613,12 +893,21 @@ def run_multi_task_evolution(
 
     # --- Training summary ---
     best_f = ea.f_best_so_far  # shape (3,) for NSGA-II
+    if ea.x_best_so_far is not None:
+        world.update_robot_xml(ea.x_best_so_far)
+        np.save(join(results_dir, "x_best.npy"), np.asarray(ea.x_best_so_far))
+        np.save(join(results_dir, "f_best.npy"), np.asarray(ea.f_best_so_far))
+        shutil.copy2(join(world.temp_dir.name, "Robot.xml"), join(results_dir, "Robot.xml"))
+
     score_path = join(results_dir, "training_score.txt")
     with open(score_path, "w") as f:
         f.write("=" * 60 + "\n")
         f.write("MICRO-515 Final Project — Training Summary\n")
         f.write("=" * 60 + "\n\n")
-        f.write(f"Generations     : {num_generations}\n")
+        f.write(f"Resume          : {resume}\n")
+        f.write(f"Start generation: {start_gen}\n")
+        f.write(f"Added generations: {num_generations}\n")
+        f.write(f"Total generations: {len(ea.full_f)}\n")
         f.write(f"Population size : {population_size}\n")
         f.write(f"Controller      : {type(world.controller).__name__}"
                 f"  ({world.n_weights} params)\n")
@@ -631,15 +920,22 @@ def run_multi_task_evolution(
         f.write(f"  {'sum':<6}: {float(best_f.sum()):10.2f}\n")
     print(f"\nTraining summary saved to: {score_path}")
 
+    try:
+        plot_fitness(ea.full_f, results_dir, OBJECTIVE_LABELS)
+        plot_pareto_fronts_3d(
+            ea.full_f,
+            results_dir,
+            OBJECTIVE_LABELS,
+            num_generations=len(ea.full_f),
+            population_size=population_size,
+        )
+    except Exception as exc:
+        print(f"Plot generation skipped: {exc}")
+
 
 if __name__ == "__main__":
-    # Quick smoke-test — 2 generations, tiny population
+    # Fresh compact closed-loop SO2 + left-right symmetric body evolution.
     run_multi_task_evolution(
-        num_generations=100,
-        population_size=32,
-        n_parents=32,
-        n_repeats=2,
-        n_steps=100,
-        ckpt_interval=1,
-        results_dir=join(ROOT_DIR, "results", "final_test"),
+        results_dir=join(ROOT_DIR, "results", "final_project_so2_climb_sym"),
+        resume=False,
     )

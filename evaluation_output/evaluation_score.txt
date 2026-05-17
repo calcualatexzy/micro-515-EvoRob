@@ -1,0 +1,23 @@
+============================================================
+MICRO-515 Final Project — Evaluation Results
+============================================================
+
+Controller : SO2Controller  (94 params)
+Genotype   : 102 params  (controller=94, body=8)
+Reward     : healthy_reward + x_position - ctrl_cost - cfrc_cost
+
+Mean  : 12767.08
+Std   : 3573.42
+Best  : 17698.11
+Worst : 7688.18
+
+Episode   1:    7688.18
+Episode   2:   12765.13
+Episode   3:   12957.93
+Episode   4:   17097.74
+Episode   5:   13556.61
+Episode   6:   17698.11
+Episode   7:   10168.58
+Episode   8:   17626.22
+Episode   9:    8693.80
+Episode  10:    9418.45

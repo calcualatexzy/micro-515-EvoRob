@@ -80,6 +80,7 @@ class NSGAII(EA):
         self.full_f = []
         self.x_best_so_far = None
         self.f_best_so_far = None
+        self.best_scalar_so_far = -np.inf
         self.x = None
         self.f = None
 
@@ -147,14 +148,11 @@ class NSGAII(EA):
         current_best_fitness = fitness[best_in_current_gen_idx]
         current_best_x = population[best_in_current_gen_idx]
 
-        if self.current_gen == 0:
+        current_best_scalar = float(fitness_sums[best_in_current_gen_idx])
+        if self.current_gen == 0 or current_best_scalar > self.best_scalar_so_far:
+            self.best_scalar_so_far = current_best_scalar
             self.f_best_so_far = current_best_fitness
             self.x_best_so_far = current_best_x
-        else:
-            if np.all(current_best_fitness >= self.f_best_so_far):
-                if np.any(current_best_fitness > self.f_best_so_far):
-                    self.f_best_so_far = current_best_fitness
-                    self.x_best_so_far = current_best_x
 
         if self.current_gen % 5 == 0:
             print(f"Generation {self.current_gen}:\t{self.f_best_so_far}")
@@ -190,6 +188,12 @@ class NSGAII(EA):
         Returns:
             np.ndarray: Mutated and clipped offspring population.
         """
+        parent_pool_size = len(self.current_population)
+        if parent_pool_size < 4:
+            raise ValueError(
+                "NSGA-II differential mutation needs at least 4 selected parents "
+                f"(got {parent_pool_size}). Increase n_parents."
+            )
         new_offspring = np.empty((population_size, self.n_params))
 
         # Compute ranks and crowding distances for tournament selection
@@ -204,16 +208,13 @@ class NSGAII(EA):
             # Select parent using tournament selection
             parent_idx = self.tournament_selection(ranks, crowding, tournament_size=2)
 
-            # Select 3 different individuals for differential evolution
-            r0 = parent_idx
-            while r0 == parent_idx:
-                r0 = np.random.randint(0, population_size)
-            r1 = r0
-            while r1 == r0 or r1 == parent_idx:
-                r1 = np.random.randint(0, population_size)
-            r2 = r1
-            while r2 == r1 or r2 == r0 or r2 == parent_idx:
-                r2 = np.random.randint(0, population_size)
+            # Select mutation donors from the selected parent pool, not from
+            # the requested offspring size.  These can differ when
+            # n_parents < population_size.
+            donor_candidates = np.delete(np.arange(parent_pool_size), parent_idx)
+            r0, r1, r2 = np.random.choice(
+                donor_candidates, size=3, replace=False
+            )
 
             jrand = np.random.randint(0, self.n_params)
             for j in range(self.n_params):
