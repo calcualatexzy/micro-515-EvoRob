@@ -69,7 +69,7 @@ MY_CONTROLLER = SO2Controller(input_size=27, output_size=8, hidden_size=8)
 
 # --- Paths ---
 # Option A: directory that contains x_best.npy (recommended)
-CHECKPOINT_DIR = "results/final_project_so2_climb_sym"
+CHECKPOINT_DIR = "results/final_project_so2_climb/130"
 
 # Option B: provide the robot XML and genotype as separate files
 ROBOT_XML_PATH = None   # e.g. "/abs/path/to/Robot.xml"
@@ -77,7 +77,7 @@ GENOTYPE_PATH  = None   # e.g. "/abs/path/to/x_best.npy"
 
 # --- Output ---
 OUTPUT_DIR = "evaluation_output"
-N_EPISODES = 10     # increase to 256 for the final leaderboard submission
+N_EPISODES = 10    # increase to 256 for the final leaderboard submission
 SEED       = 0      # fixed — do NOT change for a fair comparison
 MAX_STEPS  = 1000   # fixed — do NOT change
 

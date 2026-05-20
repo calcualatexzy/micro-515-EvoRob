@@ -316,10 +316,10 @@ class FinalWorld(World):
             )
 
         self.n_weights     = self.controller.n_params
-        # Left-right symmetric morphology:
-        # [front upper, front lower, rear upper, rear lower].
-        # These 4 genes are decoded and mirrored onto the 8 ant leg segments.
-        self.n_body_params = 4
+        # Independent morphology genes for all 8 ant leg segments:
+        # [front left upper, front left lower, front right upper, front right lower,
+        #  back left upper, back left lower, back right upper, back right lower].
+        self.n_body_params = 8
         self.n_params      = self.n_weights + self.n_body_params
 
         # Temporary directory holds AntRobot.xml + one combined world XML per terrain
@@ -364,26 +364,13 @@ class FinalWorld(World):
 
         Splits genotype into:
           genotype[:n_weights]  → controller
-          genotype[n_weights:]  → 4 symmetric body params via (g+1)/4 + 0.1
+          genotype[n_weights:]  → 8 independent body params via (g+1)/4 + 0.1
 
         Returns (points, connectivity_mat) for AntRobot construction.
         """
-        control_params = genotype[:self.n_weights]
-        symmetric_body_params = (genotype[self.n_weights:] + 1) / 4 + 0.1
+        control_params = genotype[:self.n_weights]*0.1
+        body_params = (genotype[self.n_weights:] + 1) / 4 + 0.1
         self.controller.geno2pheno(control_params)
-
-        (
-            front_leg,
-            front_ankle,
-            rear_leg,
-            rear_ankle,
-        ) = symmetric_body_params
-        body_params = np.array([
-            front_leg, front_ankle,  # front left
-            front_leg, front_ankle,  # front right
-            rear_leg, rear_ankle,    # back left
-            rear_leg, rear_ankle,    # back right
-        ])
 
         front_left_leg, front_left_ankle, front_right_leg, front_right_ankle, back_left_leg, back_left_ankle, back_right_leg, back_right_ankle, = body_params
 
@@ -934,8 +921,8 @@ def run_multi_task_evolution(
 
 
 if __name__ == "__main__":
-    # Fresh compact closed-loop SO2 + left-right symmetric body evolution.
+    # Fresh compact closed-loop SO2 + independent 8-gene body evolution.
     run_multi_task_evolution(
-        results_dir=join(ROOT_DIR, "results", "final_project_so2_climb_sym"),
+        results_dir=join(ROOT_DIR, "results", "final_project_so2_climb"),
         resume=False,
     )
