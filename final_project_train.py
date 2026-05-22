@@ -15,6 +15,8 @@ The evaluation terrain is separate and fixed.  Students test their best
 evolved robot on it using final_project_test.py — it is not trained on.
 """
 
+import argparse
+import json
 import os
 import shutil
 import xml.etree.ElementTree as xml
@@ -316,6 +318,7 @@ class FinalWorld(World):
             )
 
         self.n_weights     = self.controller.n_params
+        self.controller_param_scale = 0.1
         # Independent morphology genes for all 8 ant leg segments:
         # [front left upper, front left lower, front right upper, front right lower,
         #  back left upper, back left lower, back right upper, back right lower].
@@ -368,7 +371,7 @@ class FinalWorld(World):
 
         Returns (points, connectivity_mat) for AntRobot construction.
         """
-        control_params = genotype[:self.n_weights]*0.1
+        control_params = genotype[:self.n_weights] * self.controller_param_scale
         body_params = (genotype[self.n_weights:] + 1) / 4 + 0.1
         self.controller.geno2pheno(control_params)
 
@@ -539,6 +542,45 @@ class FinalWorld(World):
             self._eval_ice(n_repeats, n_steps),
             self._eval_hill(n_repeats, n_steps),
         ])
+
+
+class MLPBody4SO2ControlWorld(FinalWorld):
+    """Final-project world that freezes a Challenge3 MLP body and evolves SO2 only."""
+
+    def __init__(self, fixed_body_raw: np.ndarray, controller_param_scale: float = 1.0):
+        super().__init__()
+        fixed_body_raw = np.asarray(fixed_body_raw, dtype=float)
+        if fixed_body_raw.size != self.n_body_params:
+            raise ValueError(
+                f"Expected {self.n_body_params} fixed body genes, got "
+                f"{fixed_body_raw.size}."
+            )
+        self.fixed_body_raw = fixed_body_raw.copy()
+        self.controller_param_scale = float(controller_param_scale)
+        self.n_controller_params = self.n_weights
+        self.n_full_params = self.n_weights + self.n_body_params
+        # The EA in MLPbody4SO2control mode optimizes only SO2 controller genes.
+        self.n_params = self.n_controller_params
+
+    def as_full_genotype(self, controller_genotype: np.ndarray) -> np.ndarray:
+        controller_genotype = np.asarray(controller_genotype, dtype=float)
+        if controller_genotype.size != self.n_controller_params:
+            raise ValueError(
+                f"Expected {self.n_controller_params} SO2 controller genes, "
+                f"got {controller_genotype.size}."
+            )
+        return np.concatenate([controller_genotype, self.fixed_body_raw])
+
+    def geno2pheno(self, genotype: np.ndarray):
+        genotype = np.asarray(genotype, dtype=float)
+        if genotype.size == self.n_controller_params:
+            genotype = self.as_full_genotype(genotype)
+        elif genotype.size != self.n_full_params:
+            raise ValueError(
+                f"Expected either {self.n_controller_params} controller genes "
+                f"or {self.n_full_params} full genes, got {genotype.size}."
+            )
+        return super().geno2pheno(genotype)
 
 # ---------------------------------------------------------------------------
 # Warm-start helpers
@@ -920,9 +962,275 @@ def run_multi_task_evolution(
         print(f"Plot generation skipped: {exc}")
 
 
-if __name__ == "__main__":
-    # Fresh compact closed-loop SO2 + independent 8-gene body evolution.
-    run_multi_task_evolution(
-        results_dir=join(ROOT_DIR, "results", "final_project_so2_climb"),
-        resume=False,
+def load_mlp_body_from_checkpoint(
+    checkpoint_source: str,
+    *,
+    mlp_hidden_size: int = 16,
+) -> tuple[np.ndarray, np.ndarray, str]:
+    """Load the 8 body genes from a Challenge3 MLP checkpoint.
+
+    Returns:
+        full checkpoint genotype, body gene slice, resolved x_best.npy path.
+    """
+    genotype = _load_checkpoint_genotype(checkpoint_source)
+    from evorob.world.robot.controllers.mlp import NeuralNetworkController
+
+    mlp_controller = NeuralNetworkController(
+        input_size=27,
+        output_size=8,
+        hidden_size=mlp_hidden_size,
     )
+    expected_size = mlp_controller.n_params + 8
+    if genotype.size < expected_size:
+        raise ValueError(
+            f"MLP body checkpoint has {genotype.size} genes, but hidden_size="
+            f"{mlp_hidden_size} expects at least {expected_size} "
+            f"({mlp_controller.n_params} controller + 8 body)."
+        )
+
+    body_raw = np.asarray(
+        genotype[mlp_controller.n_params : mlp_controller.n_params + 8],
+        dtype=float,
+    )
+    return genotype, body_raw, os.path.abspath(os.path.expanduser(checkpoint_source))
+
+
+def run_mlp_body4so2control(
+    num_generations: int = 70,
+    population_size: int = 250,
+    n_parents: int = 250,
+    n_repeats: int = 4,
+    n_steps: int = 500,
+    mutation_prob: float = 0.3,
+    crossover_prob: float = 0.9,
+    bounds: tuple = (-1, 1),
+    ckpt_interval: int = 10,
+    results_dir: str | None = None,
+    random_seed: int = 42,
+    mlp_body_checkpoint: str | None = None,
+    mlp_body_hidden_size: int = 16,
+    so2_controller_param_scale: float = 1.0,
+) -> None:
+    """Evolve only the SO2 controller while freezing a body from an MLP checkpoint.
+
+    The saved root ``x_best.npy`` is a full final-project genotype:
+    ``[SO2 controller genes | fixed MLP body genes]``.
+    """
+    np.random.seed(random_seed)
+
+    if results_dir is None:
+        results_dir = join(ROOT_DIR, "results", "MLPbody4SO2control")
+    if mlp_body_checkpoint is None:
+        mlp_body_checkpoint = join(ROOT_DIR, "results", "AntHill-v0", "single")
+
+    _, fixed_body_raw, resolved_body_source = load_mlp_body_from_checkpoint(
+        mlp_body_checkpoint,
+        mlp_hidden_size=mlp_body_hidden_size,
+    )
+
+    world = MLPBody4SO2ControlWorld(
+        fixed_body_raw=fixed_body_raw,
+        controller_param_scale=so2_controller_param_scale,
+    )
+    print("Mode: MLPbody4SO2control")
+    print(f"Fixed MLP body source : {resolved_body_source}")
+    print(f"Fixed body raw genes  : {fixed_body_raw}")
+    print(f"Fixed body lengths [m]: {(fixed_body_raw + 1.0) / 4.0 + 0.1}")
+    print(
+        f"Optimizing SO2 controller only: {world.n_controller_params} params; "
+        f"saved full genotype: {world.n_full_params} params"
+    )
+    print(f"SO2 controller param scale during training: {world.controller_param_scale}")
+
+    ea = NSGAII(
+        population_size=population_size,
+        n_opt_params=world.n_params,
+        n_parents=n_parents,
+        num_generations=num_generations,
+        bounds=bounds,
+        mutation_prob=mutation_prob,
+        crossover_prob=crossover_prob,
+        output_dir=results_dir,
+    )
+
+    os.makedirs(results_dir, exist_ok=True)
+    full_x_history: list[np.ndarray] = []
+    best_full_so_far: np.ndarray | None = None
+    best_scalar_so_far = -np.inf
+    _best_xml_stage = join(results_dir, "_best_robot.xml")
+
+    for gen in range(num_generations):
+        controller_population = ea.ask()
+        full_population = np.asarray(
+            [world.as_full_genotype(ind) for ind in controller_population],
+            dtype=float,
+        )
+        fitnesses = np.empty((len(controller_population), 3), dtype=float)
+
+        for idx, controller_genotype in enumerate(controller_population):
+            fitnesses[idx] = world.evaluate_individual(
+                controller_genotype,
+                n_repeats=n_repeats,
+                n_steps=n_steps,
+            )
+            scalar = float(fitnesses[idx].sum())
+            if scalar > best_scalar_so_far:
+                best_scalar_so_far = scalar
+                best_full_so_far = full_population[idx].copy()
+                shutil.copy2(join(world.temp_dir.name, "Robot.xml"), _best_xml_stage)
+
+        full_x_history.append(full_population)
+        save_ckpt = (gen % ckpt_interval == 0) or (gen == num_generations - 1)
+        ea.tell(controller_population, fitnesses, save_checkpoint=save_ckpt)
+
+        if save_ckpt:
+            ckpt_dir = join(results_dir, str(gen))
+            os.makedirs(ckpt_dir, exist_ok=True)
+            if ea.x_best_so_far is not None:
+                np.save(join(ckpt_dir, "x_controller_best.npy"), ea.x_best_so_far)
+                np.save(join(ckpt_dir, "x_best.npy"), world.as_full_genotype(ea.x_best_so_far))
+            np.save(join(ckpt_dir, "x_full.npy"), full_population)
+            shutil.copy2(_best_xml_stage, join(ckpt_dir, "Robot.xml"))
+
+    if ea.x_best_so_far is None or best_full_so_far is None:
+        raise RuntimeError("No best individual was recorded during MLPbody4SO2control.")
+
+    best_controller = np.asarray(ea.x_best_so_far, dtype=float)
+    best_full = world.as_full_genotype(best_controller)
+    world.update_robot_xml(best_controller)
+
+    np.save(join(results_dir, "x_best.npy"), best_full)
+    np.save(join(results_dir, "x_controller_best.npy"), best_controller)
+    np.save(join(results_dir, "f_best.npy"), np.asarray(ea.f_best_so_far))
+    np.save(join(results_dir, "full_x.npy"), np.asarray(full_x_history))
+    np.save(join(results_dir, "full_x_controller.npy"), np.asarray(ea.full_x))
+    np.save(join(results_dir, "full_f.npy"), np.asarray(ea.full_f))
+    shutil.copy2(join(world.temp_dir.name, "Robot.xml"), join(results_dir, "Robot.xml"))
+
+    metadata = {
+        "mode": "MLPbody4SO2control",
+        "mlp_body_checkpoint": resolved_body_source,
+        "mlp_body_hidden_size": int(mlp_body_hidden_size),
+        "fixed_body_raw": fixed_body_raw.tolist(),
+        "fixed_body_lengths_m": ((fixed_body_raw + 1.0) / 4.0 + 0.1).tolist(),
+        "controller": "SO2Controller",
+        "controller_params": int(world.n_controller_params),
+        "body_params": int(world.n_body_params),
+        "full_genotype_params": int(world.n_full_params),
+        "optimized_params": int(world.n_params),
+        "so2_controller_param_scale": float(world.controller_param_scale),
+        "num_generations": int(num_generations),
+        "population_size": int(population_size),
+        "n_parents": int(n_parents),
+        "n_repeats": int(n_repeats),
+        "n_steps": int(n_steps),
+        "random_seed": int(random_seed),
+        "best_fitness": np.asarray(ea.f_best_so_far, dtype=float).tolist(),
+        "best_scalar": float(np.asarray(ea.f_best_so_far, dtype=float).sum()),
+    }
+    with open(join(results_dir, "metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    score_path = join(results_dir, "training_score.txt")
+    with open(score_path, "w") as f:
+        f.write("=" * 60 + "\n")
+        f.write("MICRO-515 Final Project — MLPbody4SO2control Summary\n")
+        f.write("=" * 60 + "\n\n")
+        f.write(f"Fixed body source : {resolved_body_source}\n")
+        f.write(f"SO2 scale         : {world.controller_param_scale}\n")
+        f.write(f"Optimized params  : {world.n_params}\n")
+        f.write(f"Saved full params : {world.n_full_params}\n\n")
+        labels = ["flat", "ice", "hill"]
+        for label, val in zip(labels, np.asarray(ea.f_best_so_far, dtype=float)):
+            f.write(f"  {label:<6}: {float(val):10.2f}\n")
+        f.write(f"  {'sum':<6}: {float(np.asarray(ea.f_best_so_far).sum()):10.2f}\n")
+    print(f"\nMLPbody4SO2control summary saved to: {score_path}")
+
+    try:
+        plot_fitness(ea.full_f, results_dir, OBJECTIVE_LABELS)
+        plot_pareto_fronts_3d(
+            ea.full_f,
+            results_dir,
+            OBJECTIVE_LABELS,
+            num_generations=len(ea.full_f),
+            population_size=population_size,
+        )
+    except Exception as exc:
+        print(f"Plot generation skipped: {exc}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="MICRO-515 final-project training modes."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["full_so2", "MLPbody4SO2control"],
+        default="full_so2",
+        help="Training mode. full_so2 preserves the existing body+SO2 co-evolution.",
+    )
+    parser.add_argument("--num-generations", type=int, default=70)
+    parser.add_argument("--population-size", type=int, default=250)
+    parser.add_argument("--n-parents", type=int, default=None)
+    parser.add_argument("--n-repeats", type=int, default=4)
+    parser.add_argument("--n-steps", type=int, default=500)
+    parser.add_argument("--mutation-prob", type=float, default=0.3)
+    parser.add_argument("--crossover-prob", type=float, default=0.9)
+    parser.add_argument("--ckpt-interval", type=int, default=10)
+    parser.add_argument("--random-seed", type=int, default=42)
+    parser.add_argument("--results-dir", default=None)
+    parser.add_argument(
+        "--mlp-body-checkpoint",
+        default=join(ROOT_DIR, "results", "AntHill-v0", "single"),
+        help="Challenge3 MLP checkpoint directory or x_best.npy for MLPbody4SO2control.",
+    )
+    parser.add_argument("--mlp-body-hidden-size", type=int, default=16)
+    parser.add_argument(
+        "--so2-controller-param-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Scale applied to SO2 genes during MLPbody4SO2control training. "
+            "Use 1.0 for final_project_test.py raw compatibility; use 0.1 to "
+            "match the original FinalWorld training scale."
+        ),
+    )
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    n_parents = args.n_parents if args.n_parents is not None else args.population_size
+
+    common = dict(
+        num_generations=args.num_generations,
+        population_size=args.population_size,
+        n_parents=n_parents,
+        n_repeats=args.n_repeats,
+        n_steps=args.n_steps,
+        mutation_prob=args.mutation_prob,
+        crossover_prob=args.crossover_prob,
+        ckpt_interval=args.ckpt_interval,
+        random_seed=args.random_seed,
+    )
+
+    if args.mode == "MLPbody4SO2control":
+        run_mlp_body4so2control(
+            **common,
+            results_dir=args.results_dir
+            or join(ROOT_DIR, "results", "MLPbody4SO2control"),
+            mlp_body_checkpoint=args.mlp_body_checkpoint,
+            mlp_body_hidden_size=args.mlp_body_hidden_size,
+            so2_controller_param_scale=args.so2_controller_param_scale,
+        )
+    else:
+        run_multi_task_evolution(
+            **common,
+            results_dir=args.results_dir
+            or join(ROOT_DIR, "results", "final_project_so2_climb"),
+            resume=False,
+        )
+
+
+if __name__ == "__main__":
+    main()
