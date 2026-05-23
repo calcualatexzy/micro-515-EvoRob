@@ -41,6 +41,8 @@ MAX_EPISODE_STEPS = 1000  # fixed for leaderboard — do not change
 DEFAULT_MLP_WARM_START = join(ROOT_DIR, "results/final_project_so2_climb/130")
 USE_SO2_CONTROLLER = True
 OBJECTIVE_LABELS = ["Flat", "Ice", "Hill"]
+ARCHIVE_BODY_PATH = join(ROOT_DIR, "archive_body.npy")
+ARCHIVE_FITNESS_PATH = join(ROOT_DIR, "archive_fitness.npy")
 
 
 def _import_pyplot():
@@ -643,6 +645,45 @@ def _warm_start_population_with_mlp(
     return warm_population
 
 
+def load_archive_best_body(
+    archive_body_path: str = ARCHIVE_BODY_PATH,
+    archive_fitness_path: str = ARCHIVE_FITNESS_PATH,
+) -> tuple[int, float, np.ndarray, np.ndarray]:
+    """Load the archive body with the highest archived fitness."""
+    archive_body = np.load(archive_body_path, allow_pickle=True)
+    archive_fitness = np.load(archive_fitness_path, allow_pickle=True)
+
+    if archive_body.ndim != 2:
+        raise ValueError(f"archive_body must be 2-D, got shape {archive_body.shape}")
+    if archive_body.shape[1] != 8:
+        raise ValueError(
+            "Expected 8 body genes per archived body, "
+            f"got shape {archive_body.shape}."
+        )
+
+    fitness = np.asarray(archive_fitness, dtype=float)
+    if fitness.ndim == 1:
+        selection_values = fitness
+    elif fitness.shape[0] == archive_body.shape[0]:
+        selection_values = fitness.reshape(fitness.shape[0], -1).sum(axis=1)
+    else:
+        raise ValueError(
+            "archive_fitness first dimension must match archive_body. "
+            f"Got body {archive_body.shape}, fitness {fitness.shape}."
+        )
+
+    if selection_values.shape[0] != archive_body.shape[0]:
+        raise ValueError(
+            "archive_fitness length must match archive_body rows. "
+            f"Got body {archive_body.shape[0]}, fitness {selection_values.shape[0]}."
+        )
+
+    best_idx = int(np.argmax(selection_values))
+    best_body = np.asarray(archive_body[best_idx], dtype=float)
+    best_fitness = float(selection_values[best_idx])
+    return best_idx, best_fitness, best_body, fitness
+
+
 # ---------------------------------------------------------------------------
 # Neutral leaderboard evaluation  (TA-graded — do not modify)
 # ---------------------------------------------------------------------------
@@ -1159,13 +1200,184 @@ def run_mlp_body4so2control(
         print(f"Plot generation skipped: {exc}")
 
 
+def run_archive_body4so2control(
+    num_generations: int = 70,
+    population_size: int = 250,
+    n_parents: int = 250,
+    n_repeats: int = 4,
+    n_steps: int = 500,
+    mutation_prob: float = 0.3,
+    crossover_prob: float = 0.9,
+    bounds: tuple = (-1, 1),
+    ckpt_interval: int = 10,
+    results_dir: str | None = None,
+    random_seed: int = 42,
+    archive_body_path: str = ARCHIVE_BODY_PATH,
+    archive_fitness_path: str = ARCHIVE_FITNESS_PATH,
+    so2_controller_param_scale: float = 1.0,
+) -> None:
+    """Evolve only the SO2 controller while freezing the archive's best body.
+
+    The saved root ``x_best.npy`` is a full final-project genotype:
+    ``[SO2 controller genes | archive_body[argmax(archive_fitness)]]``.
+    """
+    np.random.seed(random_seed)
+
+    if results_dir is None:
+        results_dir = join(ROOT_DIR, "results", "Archivebody4SO2control")
+
+    best_idx, best_archive_fitness, fixed_body_raw, archive_fitness = load_archive_best_body(
+        archive_body_path,
+        archive_fitness_path,
+    )
+
+    world = MLPBody4SO2ControlWorld(
+        fixed_body_raw=fixed_body_raw,
+        controller_param_scale=so2_controller_param_scale,
+    )
+    print("Mode: Archivebody4SO2control")
+    print(f"Archive body source  : {os.path.abspath(archive_body_path)}")
+    print(f"Archive fitness source: {os.path.abspath(archive_fitness_path)}")
+    print(f"Archive best index   : {best_idx}")
+    print(f"Archive best fitness : {best_archive_fitness:.6f}")
+    print(f"Fixed body raw genes : {fixed_body_raw}")
+    print(f"Fixed body lengths [m]: {(fixed_body_raw + 1.0) / 4.0 + 0.1}")
+    print(
+        f"Optimizing SO2 controller only: {world.n_controller_params} params; "
+        f"saved full genotype: {world.n_full_params} params"
+    )
+    print(f"SO2 controller param scale during training: {world.controller_param_scale}")
+
+    ea = NSGAII(
+        population_size=population_size,
+        n_opt_params=world.n_params,
+        n_parents=n_parents,
+        num_generations=num_generations,
+        bounds=bounds,
+        mutation_prob=mutation_prob,
+        crossover_prob=crossover_prob,
+        output_dir=results_dir,
+    )
+
+    os.makedirs(results_dir, exist_ok=True)
+    full_x_history: list[np.ndarray] = []
+    best_full_so_far: np.ndarray | None = None
+    best_scalar_so_far = -np.inf
+    _best_xml_stage = join(results_dir, "_best_robot.xml")
+
+    for gen in range(num_generations):
+        controller_population = ea.ask()
+        full_population = np.asarray(
+            [world.as_full_genotype(ind) for ind in controller_population],
+            dtype=float,
+        )
+        fitnesses = np.empty((len(controller_population), 3), dtype=float)
+
+        for idx, controller_genotype in enumerate(controller_population):
+            fitnesses[idx] = world.evaluate_individual(
+                controller_genotype,
+                n_repeats=n_repeats,
+                n_steps=n_steps,
+            )
+            scalar = float(fitnesses[idx].sum())
+            if scalar > best_scalar_so_far:
+                best_scalar_so_far = scalar
+                best_full_so_far = full_population[idx].copy()
+                shutil.copy2(join(world.temp_dir.name, "Robot.xml"), _best_xml_stage)
+
+        full_x_history.append(full_population)
+        save_ckpt = (gen % ckpt_interval == 0) or (gen == num_generations - 1)
+        ea.tell(controller_population, fitnesses, save_checkpoint=save_ckpt)
+
+        if save_ckpt:
+            ckpt_dir = join(results_dir, str(gen))
+            os.makedirs(ckpt_dir, exist_ok=True)
+            if ea.x_best_so_far is not None:
+                np.save(join(ckpt_dir, "x_controller_best.npy"), ea.x_best_so_far)
+                np.save(join(ckpt_dir, "x_best.npy"), world.as_full_genotype(ea.x_best_so_far))
+            np.save(join(ckpt_dir, "x_full.npy"), full_population)
+            shutil.copy2(_best_xml_stage, join(ckpt_dir, "Robot.xml"))
+
+    if ea.x_best_so_far is None or best_full_so_far is None:
+        raise RuntimeError("No best individual was recorded during Archivebody4SO2control.")
+
+    best_controller = np.asarray(ea.x_best_so_far, dtype=float)
+    best_full = world.as_full_genotype(best_controller)
+    world.update_robot_xml(best_controller)
+
+    np.save(join(results_dir, "x_best.npy"), best_full)
+    np.save(join(results_dir, "x_controller_best.npy"), best_controller)
+    np.save(join(results_dir, "f_best.npy"), np.asarray(ea.f_best_so_far))
+    np.save(join(results_dir, "full_x.npy"), np.asarray(full_x_history))
+    np.save(join(results_dir, "full_x_controller.npy"), np.asarray(ea.full_x))
+    np.save(join(results_dir, "full_f.npy"), np.asarray(ea.full_f))
+    shutil.copy2(join(world.temp_dir.name, "Robot.xml"), join(results_dir, "Robot.xml"))
+
+    metadata = {
+        "mode": "Archivebody4SO2control",
+        "archive_body_path": os.path.abspath(archive_body_path),
+        "archive_fitness_path": os.path.abspath(archive_fitness_path),
+        "archive_size": int(np.asarray(archive_fitness).shape[0]),
+        "archive_best_idx": int(best_idx),
+        "archive_best_fitness": float(best_archive_fitness),
+        "fixed_body_raw": fixed_body_raw.tolist(),
+        "fixed_body_lengths_m": ((fixed_body_raw + 1.0) / 4.0 + 0.1).tolist(),
+        "controller": "SO2Controller",
+        "controller_params": int(world.n_controller_params),
+        "body_params": int(world.n_body_params),
+        "full_genotype_params": int(world.n_full_params),
+        "optimized_params": int(world.n_params),
+        "so2_controller_param_scale": float(world.controller_param_scale),
+        "num_generations": int(num_generations),
+        "population_size": int(population_size),
+        "n_parents": int(n_parents),
+        "n_repeats": int(n_repeats),
+        "n_steps": int(n_steps),
+        "random_seed": int(random_seed),
+        "best_fitness": np.asarray(ea.f_best_so_far, dtype=float).tolist(),
+        "best_scalar": float(np.asarray(ea.f_best_so_far, dtype=float).sum()),
+    }
+    with open(join(results_dir, "metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    score_path = join(results_dir, "training_score.txt")
+    with open(score_path, "w") as f:
+        f.write("=" * 60 + "\n")
+        f.write("MICRO-515 Final Project — Archivebody4SO2control Summary\n")
+        f.write("=" * 60 + "\n\n")
+        f.write(f"Archive body      : {os.path.abspath(archive_body_path)}\n")
+        f.write(f"Archive fitness   : {os.path.abspath(archive_fitness_path)}\n")
+        f.write(f"Archive best idx  : {best_idx}\n")
+        f.write(f"Archive best fit  : {best_archive_fitness:.6f}\n")
+        f.write(f"SO2 scale         : {world.controller_param_scale}\n")
+        f.write(f"Optimized params  : {world.n_params}\n")
+        f.write(f"Saved full params : {world.n_full_params}\n\n")
+        labels = ["flat", "ice", "hill"]
+        for label, val in zip(labels, np.asarray(ea.f_best_so_far, dtype=float)):
+            f.write(f"  {label:<6}: {float(val):10.2f}\n")
+        f.write(f"  {'sum':<6}: {float(np.asarray(ea.f_best_so_far).sum()):10.2f}\n")
+    print(f"\nArchivebody4SO2control summary saved to: {score_path}")
+
+    try:
+        plot_fitness(ea.full_f, results_dir, OBJECTIVE_LABELS)
+        plot_pareto_fronts_3d(
+            ea.full_f,
+            results_dir,
+            OBJECTIVE_LABELS,
+            num_generations=len(ea.full_f),
+            population_size=population_size,
+        )
+    except Exception as exc:
+        print(f"Plot generation skipped: {exc}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="MICRO-515 final-project training modes."
     )
     parser.add_argument(
         "--mode",
-        choices=["full_so2", "MLPbody4SO2control"],
+        choices=["full_so2", "MLPbody4SO2control", "Archivebody4SO2control"],
         default="full_so2",
         help="Training mode. full_so2 preserves the existing body+SO2 co-evolution.",
     )
@@ -1186,11 +1398,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--mlp-body-hidden-size", type=int, default=16)
     parser.add_argument(
+        "--archive-body",
+        default=ARCHIVE_BODY_PATH,
+        help="Archive body .npy path for Archivebody4SO2control.",
+    )
+    parser.add_argument(
+        "--archive-fitness",
+        default=ARCHIVE_FITNESS_PATH,
+        help="Archive fitness .npy path for Archivebody4SO2control.",
+    )
+    parser.add_argument(
         "--so2-controller-param-scale",
         type=float,
         default=1.0,
         help=(
-            "Scale applied to SO2 genes during MLPbody4SO2control training. "
+            "Scale applied to SO2 genes during fixed-body SO2 training. "
             "Use 1.0 for final_project_test.py raw compatibility; use 0.1 to "
             "match the original FinalWorld training scale."
         ),
@@ -1221,6 +1443,15 @@ def main() -> None:
             or join(ROOT_DIR, "results", "MLPbody4SO2control"),
             mlp_body_checkpoint=args.mlp_body_checkpoint,
             mlp_body_hidden_size=args.mlp_body_hidden_size,
+            so2_controller_param_scale=args.so2_controller_param_scale,
+        )
+    elif args.mode == "Archivebody4SO2control":
+        run_archive_body4so2control(
+            **common,
+            results_dir=args.results_dir
+            or join(ROOT_DIR, "results", "Archivebody4SO2control"),
+            archive_body_path=args.archive_body,
+            archive_fitness_path=args.archive_fitness,
             so2_controller_param_scale=args.so2_controller_param_scale,
         )
     else:
